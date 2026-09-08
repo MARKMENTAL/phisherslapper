@@ -275,6 +275,13 @@ get_registrar() {
     fi
 }
 
+# True only for clean YYYY-MM-DD strings. Any sentinel ("Unknown / ..."),
+# empty value, or whitespace/garbage variant fails — deliberately stricter
+# than comparing against a single failure literal.
+valid_iso_date() {
+    [[ "${1:-}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]
+}
+
 # Whole days between YYYY-MM-DD and today; empty string if unparseable.
 domain_age_days() {
     local ymd="$1"
@@ -357,6 +364,7 @@ collect_domain_data() {
     SUSPECT_SANS=$(get_cert_sans "$SUSPECT_DOMAIN")
     SUSPECT_CLASS=$(get_cert_class "$SUSPECT_DOMAIN")
 
+    TARGET_AGE_DAYS=$(domain_age_days "$TARGET_DATE")
     SUSPECT_AGE_DAYS=$(domain_age_days "$SUSPECT_DATE")
 }
 
@@ -369,26 +377,38 @@ FINDINGS=()
 # Fail closed: a verdict is meaningless without RDAP dates and TLS certs
 # for BOTH domains, and scoring gaps default to +0 (i.e. "legitimate").
 # Abort instead of printing a verdict built on missing data.
+# Dates are validated by shape (valid_iso_date), not by comparison against
+# a single sentinel string, so any lookup-failure variant is caught.
 verify_data_quality() {
-    if [[ "$TARGET_DATE" == "Unknown / Lookup Failed" ]]; then
-        echo "[!] Error: RDAP lookup failed for target '$LEGIT_DOMAIN' (network timeout or unsupported TLD). Please check connectivity and try again." >&2
+    if ! valid_iso_date "$TARGET_DATE"; then
+        echo "[!] Error: RDAP lookup failed for target '$LEGIT_DOMAIN' (got '$TARGET_DATE'). Please check connectivity and try again." >&2
         exit 1
     fi
-    if [[ "$SUSPECT_DATE" == "Unknown / Lookup Failed" ]]; then
-        echo "[!] Error: RDAP lookup failed for suspect '$SUSPECT_DOMAIN' (network timeout or unsupported TLD). Please check connectivity and try again." >&2
+    if ! valid_iso_date "$SUSPECT_DATE"; then
+        echo "[!] Error: RDAP lookup failed for suspect '$SUSPECT_DOMAIN' (got '$SUSPECT_DATE'). Please check connectivity and try again." >&2
         exit 1
     fi
-    if [[ "$TARGET_ISSUER" == "Unknown" && "$TARGET_CLASS" == "Unknown" ]]; then
+    if [[ -z "${TARGET_AGE_DAYS:-}" ]]; then
+        echo "[!] Error: Could not determine age of target '$LEGIT_DOMAIN' (got '$TARGET_DATE'). Please check connectivity and try again." >&2
+        exit 1
+    fi
+    if [[ -z "${SUSPECT_AGE_DAYS:-}" ]]; then
+        echo "[!] Error: Could not determine age of suspect '$SUSPECT_DOMAIN' (got '$SUSPECT_DATE'). Please check connectivity and try again." >&2
+        exit 1
+    fi
+    if [[ -z "${TARGET_ISSUER:-}" || "$TARGET_ISSUER" == "Unknown" ]] && [[ -z "${TARGET_CLASS:-}" || "$TARGET_CLASS" == "Unknown" ]]; then
         echo "[!] Error: TLS certificate fetch failed for target '$LEGIT_DOMAIN' (port 443 unreachable or handshake failed). Please check connectivity and try again." >&2
         exit 1
     fi
-    if [[ "$SUSPECT_ISSUER" == "Unknown" && "$SUSPECT_CLASS" == "Unknown" ]]; then
+    if [[ -z "${SUSPECT_ISSUER:-}" || "$SUSPECT_ISSUER" == "Unknown" ]] && [[ -z "${SUSPECT_CLASS:-}" || "$SUSPECT_CLASS" == "Unknown" ]]; then
         echo "[!] Error: TLS certificate fetch failed for suspect '$SUSPECT_DOMAIN' (port 443 unreachable or handshake failed). Please check connectivity and try again." >&2
         exit 1
     fi
 }
 
 # Age check: suspect created < 90 days => +40.
+# Post-gate SUSPECT_AGE_DAYS is guaranteed non-empty; the else arm only
+# clears the display flag for old domains.
 score_age() {
     if [[ -n "$SUSPECT_AGE_DAYS" ]]; then
         if [[ "$SUSPECT_AGE_DAYS" -lt 30 ]]; then
@@ -404,9 +424,6 @@ score_age() {
         fi
     else
         AGE_FLAG=""
-        if [[ "$SUSPECT_DATE" == "Unknown / Lookup Failed" ]]; then
-            FINDINGS+=("UNKNOWN: Could not determine suspect domain age ($SUSPECT_DATE).")
-        fi
     fi
 }
 
