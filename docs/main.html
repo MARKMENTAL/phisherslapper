@@ -1,0 +1,52 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<head>
+<title>isthislegit Developer Docs - Command main</title>
+</head>
+<body bgcolor="#002b36" text="#a3b8b9" link="#859900" vlink="#b58900">
+<font color="#b58900"><h1>Command main</h1></font>
+<p>CLI entry point and fetch orchestration. Source:
+<tt>cmd/isthislegit/main.go</tt>. Package <tt>main</tt> exposes no exported
+symbols; this page documents behavior.</p>
+
+<font color="#859900"><h2>Arguments</h2></font>
+<p>Syntax: <tt>isthislegit [FLAGS] &lt;legit_domain&gt;
+&lt;suspect_domain&gt;</tt>. Flags <tt>-v/--verbose</tt>,
+<tt>-j/--json</tt>, <tt>--scale</tt>, <tt>-h/--help</tt>, plus a
+<tt>--</tt> separator. Unknown flags and anything other than exactly two
+positional domains exit 1 with a usage message. Domains are normalized with
+<a href="dns.html#NormalizeDomain">dns.NormalizeDomain</a> and validated
+with <a href="dns.html#ValidSyntax">dns.ValidSyntax</a>.</p>
+
+<font color="#859900"><h2>Budgets</h2></font>
+<table border="1" cellpadding="4">
+<tr><th>Budget</th><th>Value</th></tr>
+<tr><td>Global deadline (both domains)</td><td>15 seconds</td></tr>
+<tr><td>Per-call deadline (DNS, TLS, RDAP)</td><td>5 seconds</td></tr>
+<tr><td>Attempts per call</td><td>3, with 1 second between retries</td></tr>
+</table>
+
+<font color="#859900"><h2>Flow</h2></font>
+<ol>
+<li>DNS pre-flight for both domains in parallel; any failure aborts.</li>
+<li>Per-domain fetch in parallel: RDAP
+(<a href="rdap.html#Query">rdap.Query</a>) plus TLS
+(<a href="cert.html#InspectDomain">cert.InspectDomain</a>) concurrently.
+Field-level failures stay open (Unknown) here.</li>
+<li>Fail-closed gate:
+<a href="score.html#VerifyDataQuality">score.VerifyDataQuality</a>; aborts
+on missing dates or TLS data for either side.</li>
+<li><a href="score.html#Score">score.Score</a> produces score, findings,
+verdict, and age flag.</li>
+<li>Render: <a href="report.html#JSON">report.JSON</a> for
+<tt>-j/--json</tt>, otherwise <a href="report.html#Human">report.Human</a>
+plus <a href="report.html#Verbose">report.Verbose</a> when verbose.</li>
+</ol>
+
+<font color="#859900"><h2>Version</h2></font>
+<p>Current version string is <tt>1.01</tt>, printed in the banner, JSON
+output, and <tt>--scale</tt> header. Build target:
+<tt>CGO_ENABLED=0 go build -ldflags="-s -w" -o isthislegit
+./cmd/isthislegit</tt>.</p>
+</body>
+</html>

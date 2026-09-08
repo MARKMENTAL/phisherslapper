@@ -1,0 +1,69 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<head>
+<title>isthislegit Developer Docs - Package cert</title>
+</head>
+<body bgcolor="#002b36" text="#a3b8b9" link="#859900" vlink="#b58900">
+<font color="#b58900"><h1>Package cert</h1></font>
+<p>Leaf X.509 certificate fetching and CA/Browser Forum validation-level
+classification from policy OIDs. Source: <tt>internal/cert/cert.go</tt>.</p>
+<p>Reserved policy OIDs: <tt>2.23.140.1.1</tt> (EV),
+<tt>2.23.140.1.2.1</tt> (DV), <tt>2.23.140.1.2.2</tt> (OV),
+<tt>2.23.140.1.2.3</tt> (IV). Priority order is EV &gt; OV &gt; IV &gt; DV.</p>
+
+<hr>
+<a name="Details"></a>
+<font color="#859900"><h2>Details</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>type Details struct {
+    Issuer    string    // Organization, or fallback issuer string
+    Class     string    // EV, OV, IV, DV, or Unknown
+    SANs      []string  // DNS SANs (CN fallback), empty when unavailable
+    OIDs      []string  // raw policy OIDs found
+    Subject   string
+    IssuerStr string
+    NotBefore time.Time
+    NotAfter  time.Time
+    HasCert   bool
+}</pre></td></tr></table>
+<p>Extracted leaf-certificate fields. <tt>Issuer</tt> prefers the
+<tt>Organization</tt> attribute and falls back to Common Name, then the full
+issuer string. <tt>SANs</tt> falls back to the subject Common Name.</p>
+
+<hr>
+<a name="Classify"></a>
+<font color="#859900"><h2>Classify</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func Classify(oids []string) string</pre></td></tr></table>
+<p>Maps a set of policy OID strings to a validation class using the ordered
+priority table (EV first). Returns <tt>"Unknown"</tt> when none match.</p>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>cert.Classify([]string{"2.23.140.1.2.1"}) // =&gt; "DV"</pre></td></tr></table>
+
+<hr>
+<a name="InspectDomain"></a>
+<font color="#859900"><h2>InspectDomain</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func InspectDomain(ctx context.Context, domain string, perCall time.Duration) (*Details, error)</pre></td></tr></table>
+<p>Dials <tt>domain:443</tt> with <tt>tls.Dialer</tt>
+(<tt>InsecureSkipVerify</tt>, since the peer is untrusted by definition) and
+returns the parsed leaf via <a href="cert.html#FromLeaf">FromLeaf</a>.
+Transient failures are retried up to 3 times with a 1 second delay.</p>
+<table border="1" cellpadding="4">
+<tr><th>Parameter</th><th>Description</th></tr>
+<tr><td><tt>ctx</tt></td><td>Parent context; the global 15 second budget.</td></tr>
+<tr><td><tt>domain</tt></td><td>Already-normalized domain to dial.</td></tr>
+<tr><td><tt>perCall</tt></td><td>Per-attempt deadline (5 seconds in the CLI).</td></tr>
+</table>
+
+<hr>
+<a name="FromLeaf"></a>
+<font color="#859900"><h2>FromLeaf</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func FromLeaf(leaf *x509.Certificate) *Details</pre></td></tr></table>
+<p>Pure constructor: builds <a href="cert.html#Details">Details</a> from an
+already-parsed leaf certificate. Preferred entry point for tests.</p>
+
+<hr>
+<a name="SANsString"></a>
+<font color="#859900"><h2>SANsString</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func (d *Details) SANsString() string</pre></td></tr></table>
+<p>Joins SANs with <tt>", "</tt> for display, or returns
+<tt>"Unknown"</tt> when empty. Nil-receiver safe.</p>
+</body>
+</html>

@@ -1,0 +1,43 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<head>
+<title>isthislegit Developer Docs - Package dns</title>
+</head>
+<body bgcolor="#002b36" text="#a3b8b9" link="#859900" vlink="#b58900">
+<font color="#b58900"><h1>Package dns</h1></font>
+<p>Domain normalization, syntax validation, and DNS pre-flight resolution
+checks. Source: <tt>internal/dns/dns.go</tt>.</p>
+
+<hr>
+<a name="NormalizeDomain"></a>
+<font color="#859900"><h2>NormalizeDomain</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func NormalizeDomain(d string) string</pre></td></tr></table>
+<p>Lowercases the input and strips scheme, path, port, and trailing dot.
+Mirrors the shell <tt>normalize_domain</tt> helper.</p>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>dns.NormalizeDomain("HTTPS://Example.COM:8443/path")
+// =&gt; "example.com"</pre></td></tr></table>
+
+<hr>
+<a name="ValidSyntax"></a>
+<font color="#859900"><h2>ValidSyntax</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func ValidSyntax(d string) bool</pre></td></tr></table>
+<p>Reports whether <tt>d</tt> looks like a dotted domain name: labels of
+alphanumerics and hyphens with at least one dot. Used to reject malformed
+input before any network call.</p>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>dns.ValidSyntax("jdsoft.com")  // =&gt; true
+dns.ValidSyntax("no-dot")      // =&gt; false</pre></td></tr></table>
+
+<hr>
+<a name="CheckDNS"></a>
+<font color="#859900"><h2>CheckDNS</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func CheckDNS(ctx context.Context, domain string) error</pre></td></tr></table>
+<p>Aborts early on NXDOMAIN or unresolvable names via
+<tt>net.DefaultResolver.LookupIP</tt> with a 5 second deadline. Returns
+<tt>nil</tt> when at least one IPv4 address resolves, an error otherwise.</p>
+<table border="1" cellpadding="4">
+<tr><th>Parameter</th><th>Description</th></tr>
+<tr><td><tt>ctx</tt></td><td>Parent context; the global 15 second budget.</td></tr>
+<tr><td><tt>domain</tt></td><td>Already-normalized domain to resolve.</td></tr>
+</table>
+</body>
+</html>

@@ -1,0 +1,69 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<head>
+<title>isthislegit Developer Docs - Package rdap</title>
+</head>
+<body bgcolor="#002b36" text="#a3b8b9" link="#859900" vlink="#b58900">
+<font color="#b58900"><h1>Package rdap</h1></font>
+<p>RDAP registration-data client over <tt>https://rdap.org/domain/</tt>.
+Source: <tt>internal/rdap/rdap.go</tt>.</p>
+
+<hr>
+<a name="Event"></a>
+<font color="#859900"><h2>Event</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>type Event struct {
+    Action string `json:"eventAction"`
+    Date   string `json:"eventDate"`
+}</pre></td></tr></table>
+<p>Single RDAP event object; only <tt>registration</tt> actions are used.</p>
+
+<hr>
+<a name="Response"></a>
+<font color="#859900"><h2>Response</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>type Response struct {
+    Events   []Event  `json:"events"`
+    Entities []entity `json:"entities"`
+}</pre></td></tr></table>
+<p>Minimal parsed RDAP payload. Entities carry registrar roles and vCard
+arrays used for registrar extraction.</p>
+
+<hr>
+<a name="Result"></a>
+<font color="#859900"><h2>Result</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>type Result struct {
+    Raw   []byte    // raw JSON, kept for --verbose output
+    Resp  *Response // parsed payload
+    Found bool      // false when the lookup failed
+}</pre></td></tr></table>
+
+<hr>
+<a name="Query"></a>
+<font color="#859900"><h2>Query</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func Query(ctx context.Context, client *http.Client, domain string, perCall time.Duration) (*Result, error)</pre></td></tr></table>
+<p>Fetches RDAP JSON for <tt>domain</tt> with an <tt>Accept:
+application/json</tt> request, retrying transient failures up to 3 times.
+Non-2xx status and invalid JSON are errors.</p>
+<table border="1" cellpadding="4">
+<tr><th>Parameter</th><th>Description</th></tr>
+<tr><td><tt>ctx</tt></td><td>Parent context; the global 15 second budget.</td></tr>
+<tr><td><tt>client</tt></td><td>Shared <tt>*http.Client</tt>; per-call deadline via context.</td></tr>
+<tr><td><tt>domain</tt></td><td>Already-normalized domain to look up.</td></tr>
+<tr><td><tt>perCall</tt></td><td>Per-attempt deadline (5 seconds in the CLI).</td></tr>
+</table>
+
+<hr>
+<a name="RegistrationDate"></a>
+<font color="#859900"><h2>RegistrationDate</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func RegistrationDate(r *Result) string</pre></td></tr></table>
+<p>Returns the <tt>YYYY-MM-DD</tt> date of the <tt>registration</tt> event, or
+<tt>"Unknown / Lookup Failed"</tt> when unavailable. Nil-safe.</p>
+
+<hr>
+<a name="Registrar"></a>
+<font color="#859900"><h2>Registrar</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func Registrar(r *Result) string</pre></td></tr></table>
+<p>Best-effort registrar name, or <tt>"Unknown"</tt>. Prefers entities with
+the <tt>registrar</tt> role, falling back to the first vCard
+<tt>fn</tt> property. Nil-safe.</p>
+</body>
+</html>

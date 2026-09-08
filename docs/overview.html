@@ -1,0 +1,71 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<head>
+<title>isthislegit Developer Docs - Overview</title>
+</head>
+<body bgcolor="#002b36" text="#a3b8b9" link="#859900" vlink="#b58900">
+<font color="#b58900"><h1>isthislegit? [v1.01]</h1></font>
+<p>Domain Impersonation and OSINT Triage Tool. Compares a known-legitimate
+domain (target) against a suspect domain using DNS resolution, X.509 TLS
+certificates, and RDAP registration data, then produces a deterministic risk
+score and verdict. Single static binary; standard library plus
+<tt>golang.org/x/sync</tt> only.</p>
+
+<font color="#859900"><h2>Build and Run</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>git clone https://github.com/example/isthislegit.git
+cd isthislegit
+CGO_ENABLED=0 go build -ldflags="-s -w" -o isthislegit ./cmd/isthislegit
+./isthislegit jdsoft.com jdsoftcareers.com
+go test ./...</pre></td></tr></table>
+
+<font color="#859900"><h2>Flags</h2></font>
+<table border="1" cellpadding="4">
+<tr><th>Flag</th><th>Description</th></tr>
+<tr><td><tt>-v, --verbose</tt></td><td>Append raw cert policy OIDs, TLS details, and RDAP JSON.</td></tr>
+<tr><td><tt>-j, --json</tt></td><td>Output the result summary as JSON for scripting.</td></tr>
+<tr><td><tt>--scale</tt></td><td>Print the scoring scale table and exit.</td></tr>
+<tr><td><tt>-h, --help</tt></td><td>Display usage and exit.</td></tr>
+</table>
+
+<font color="#859900"><h2>Fetch Pipeline</h2></font>
+<p>Both domains are fetched concurrently with
+<tt>golang.org/x/sync/errgroup</tt> under a 15 second global deadline; each
+DNS, TLS, and RDAP call carries a 5 second deadline and is retried up to 3
+times. Total run time equals the slower of the two domains.</p>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>parse args --&gt; DNS pre-flight (target + suspect, parallel)
+           --&gt; fetch target   = RDAP + TLS in parallel
+           --&gt; fetch suspect  = RDAP + TLS in parallel
+           --&gt; fail-closed verify --&gt; score --&gt; render</pre></td></tr></table>
+<p>Exit codes: <tt>0</tt> on success (including <tt>--scale</tt> and
+<tt>--help</tt>), <tt>1</tt> on bad flags, invalid domains, DNS failure, or
+failed data-quality verification.</p>
+
+<font color="#859900"><h2>Scoring Scale</h2></font>
+<table border="1" cellpadding="4">
+<tr><th>Signal</th><th>Points</th></tr>
+<tr><td>Suspect domain age &lt; 30 days (CRITICAL)</td><td>+80</td></tr>
+<tr><td>Suspect domain age 30-89 days (WARNING)</td><td>+80</td></tr>
+<tr><td>Cert downgrade: target EV/OV vs suspect DV</td><td>+40</td></tr>
+<tr><td>Registrar mismatch</td><td>+30</td></tr>
+<tr><td>Same-class issuer difference (display only)</td><td>+0</td></tr>
+</table>
+<br>
+<table border="1" cellpadding="4">
+<tr><th>Score</th><th>Verdict</th></tr>
+<tr><td>0-14</td><td>LIKELY LEGITIMATE</td></tr>
+<tr><td>15-39</td><td>LIKELY UNRELATED / MISCONFIGURED</td></tr>
+<tr><td>40-50</td><td>SUSPICIOUS - MANUAL REVIEW RECOMMENDED</td></tr>
+<tr><td>51+</td><td>LIKELY PHISHING / IMPERSONATION ATTEMPT</td></tr>
+</table>
+
+<font color="#859900"><h2>Packages</h2></font>
+<ul>
+<li><a href="dns.html"><b>dns</b></a> - normalization, syntax checks, DNS pre-flight.</li>
+<li><a href="cert.html"><b>cert</b></a> - TLS leaf fetch and validation-level classification.</li>
+<li><a href="rdap.html"><b>rdap</b></a> - RDAP client, creation date and registrar extraction.</li>
+<li><a href="score.html"><b>score</b></a> - risk scoring and verdict mapping.</li>
+<li><a href="report.html"><b>report</b></a> - human, JSON, scale, and verbose renderers.</li>
+<li><a href="main.html"><b>main</b></a> - CLI entry point and fetch orchestration.</li>
+</ul>
+</body>
+</html>

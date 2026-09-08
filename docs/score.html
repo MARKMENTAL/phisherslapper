@@ -1,0 +1,88 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<head>
+<title>isthislegit Developer Docs - Package score</title>
+</head>
+<body bgcolor="#002b36" text="#a3b8b9" link="#859900" vlink="#b58900">
+<font color="#b58900"><h1>Package score</h1></font>
+<p>Deterministic risk scoring: domain-age check (+80), certificate
+downgrade check (+40), and registrar mismatch (+30), mapped onto a
+four-tier verdict. Sources: <tt>internal/score/score.go</tt>,
+<tt>internal/score/date.go</tt>.</p>
+
+<hr>
+<a name="DomainData"></a>
+<font color="#859900"><h2>DomainData</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>type DomainData struct {
+    Domain    string // queried domain
+    Date      string // YYYY-MM-DD, or sentinel on failure
+    Registrar string // "Unknown" when unavailable
+    Issuer    string // "Unknown" when unavailable
+    Class     string // EV, OV, IV, DV, or Unknown
+    SANs      string // comma-joined, or "Unknown"
+    AgeDays   int
+    AgeKnown  bool
+}</pre></td></tr></table>
+<p>Collected triage fields for one domain; the scoring input.</p>
+
+<hr>
+<a name="Result"></a>
+<font color="#859900"><h2>Result</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>type Result struct {
+    Score    int
+    Findings []string
+    Verdict  string
+    AgeFlag  string // display suffix for young suspect domains
+}</pre></td></tr></table>
+
+<hr>
+<a name="ClassLong"></a>
+<font color="#859900"><h2>ClassLong</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func ClassLong(c string) string</pre></td></tr></table>
+<p>Human-readable validation name via lookup table: EV to
+<tt>"Extended Validation"</tt>, OV to <tt>"Organization Validated"</tt>, DV
+to <tt>"Domain Validated"</tt>, IV to <tt>"Individual Validated"</tt>,
+anything else to <tt>"Unknown"</tt>.</p>
+
+<hr>
+<a name="VerifyDataQuality"></a>
+<font color="#859900"><h2>VerifyDataQuality</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func VerifyDataQuality(target, suspect DomainData) error</pre></td></tr></table>
+<p>Fails closed: returns an error when either domain lacks a valid RDAP
+date, a computable age, or any TLS signal (issuer and class both unknown).
+The CLI aborts instead of printing a verdict built on missing data.</p>
+
+<hr>
+<a name="Score"></a>
+<font color="#859900"><h2>Score</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func Score(target, suspect DomainData) Result</pre></td></tr></table>
+<p>Applies the three signals. Suspect age under 30 days adds 80 with a
+CRITICAL flag; 30-89 days adds 80 with a WARNING flag. Target EV/OV versus
+suspect DV adds 40 as DOWNGRADE; a same-class issuer difference is a
+display-only NOTE (+0). Case-insensitive registrar mismatch adds 30,
+skipped when either side is unknown.</p>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>r := score.Score(target, suspect)
+// r.Score, r.Findings, r.Verdict, r.AgeFlag</pre></td></tr></table>
+
+<hr>
+<a name="Verdict"></a>
+<font color="#859900"><h2>Verdict</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func Verdict(score int) string</pre></td></tr></table>
+<p>Maps the total via threshold table: 51+ phishing, 40+ suspicious, 15+
+unrelated/misconfigured, otherwise legitimate.</p>
+
+<hr>
+<a name="ValidISODate"></a>
+<font color="#859900"><h2>ValidISODate</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func ValidISODate(s string) bool</pre></td></tr></table>
+<p>True only for clean, calendar-valid <tt>YYYY-MM-DD</tt> strings. Any
+sentinel or garbage value fails by design.</p>
+
+<hr>
+<a name="AgeDays"></a>
+<font color="#859900"><h2>AgeDays</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func AgeDays(ymd string, now time.Time) (days int, ok bool)</pre></td></tr></table>
+<p>Whole days between <tt>ymd</tt> and <tt>now</tt>; <tt>ok</tt> is false
+when <tt>ymd</tt> is unparseable.</p>
+</body>
+</html>

@@ -1,0 +1,64 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<head>
+<title>isthislegit Developer Docs - Package report</title>
+</head>
+<body bgcolor="#002b36" text="#a3b8b9" link="#859900" vlink="#b58900">
+<font color="#b58900"><h1>Package report</h1></font>
+<p>Human, JSON, scale, and verbose renderers. Source:
+<tt>internal/report/report.go</tt>.</p>
+
+<hr>
+<a name="Data"></a>
+<font color="#859900"><h2>Data</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>type Data struct {
+    Version       string
+    Target        score.DomainData
+    Suspect       score.DomainData
+    Score         int
+    Findings      []string
+    Verdict       string
+    AgeFlag       string
+    TargetCert    *cert.Details
+    SuspectCert   *cert.Details
+    TargetRDAP    *rdap.Result
+    SuspectRDAP   *rdap.Result
+    TargetDomain  string
+    SuspectDomain string
+}</pre></td></tr></table>
+<p>Everything a renderer needs: scored domain data plus the raw cert and
+RDAP results backing verbose output.</p>
+
+<hr>
+<a name="Scale"></a>
+<font color="#859900"><h2>Scale</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func Scale(version string) string</pre></td></tr></table>
+<p>Static scoring-scale reference table (no lookups). Backs the
+<tt>--scale</tt> flag.</p>
+
+<hr>
+<a name="Human"></a>
+<font color="#859900"><h2>Human</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func Human(d Data) string</pre></td></tr></table>
+<p>Triage report with per-domain blocks (creation date, registrar, issuer,
+validation, SANs), the scored risk analysis, and the verdict. Empty
+findings render a clean bill of health.</p>
+
+<hr>
+<a name="JSON"></a>
+<font color="#859900"><h2>JSON</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func JSON(d Data) string</pre></td></tr></table>
+<p>Machine-readable summary with <tt>tool</tt>, <tt>version</tt>,
+<tt>target</tt>, <tt>suspect</tt> (including suspect <tt>age_days</tt>),
+<tt>risk_score</tt>, <tt>findings</tt>, and <tt>verdict</tt>. Ends with a
+newline for pipeline use.</p>
+
+<hr>
+<a name="Verbose"></a>
+<font color="#859900"><h2>Verbose</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func Verbose(d Data) string</pre></td></tr></table>
+<p>Raw policy OIDs with classes, per-domain TLS details (issuer, subject,
+validity, SANs), and raw RDAP JSON for both domains. Missing data renders
+an explicit unavailable notice per section.</p>
+</body>
+</html>
