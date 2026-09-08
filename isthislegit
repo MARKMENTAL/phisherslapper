@@ -1,0 +1,459 @@
+#!/usr/bin/env bash
+#
+# isthislegit? [v1.0.0]
+# Domain Impersonation & OSINT Triage Tool
+#
+# Compares a known-legitimate domain against a suspect domain using
+# X.509 TLS certificates (OpenSSL), RDAP registration data (curl+jq),
+# and DNS resolution (dig) to produce a risk score and verdict.
+#
+# Requires: curl, openssl, jq, dig (plus standard GNU coreutils: date, grep, sed)
+# Target shell: GNU Bash (uses arrays, [[ ]] — not strict POSIX sh).
+
+set -u
+
+VERSION="1.0.0"
+
+VERBOSE=0
+JSON_OUT=0
+LEGIT_DOMAIN=""
+SUSPECT_DOMAIN=""
+
+# CA/Browser Forum reserved Certificate Policy OIDs (see https://cabforum.org/resources/object-registry/)
+OID_EV="2.23.140.1.1"      # Extended Validation
+OID_DV="2.23.140.1.2.1"    # Domain Validated (no identity asserted)
+OID_OV="2.23.140.1.2.2"    # Organization Validated (organization identity asserted)
+OID_IV="2.23.140.1.2.3"    # Individual Validated
+
+TMPDIR_ISTHISLEGIT="$(mktemp -d 2>/dev/null || echo "/tmp/isthislegit.$$")"
+mkdir -p "$TMPDIR_ISTHISLEGIT" 2>/dev/null
+cleanup() {
+    rm -rf "$TMPDIR_ISTHISLEGIT" 2>/dev/null
+}
+trap cleanup EXIT INT TERM
+
+usage() {
+    cat <<EOF
+  isthislegit? [v${VERSION}]
+  Domain Impersonation & OSINT Triage Tool
+
+Usage:
+  isthislegit [OPTIONS] <legit_domain> <suspect_domain>
+
+Options:
+  -v, --verbose   Output raw JSON responses from RDAP and full TLS cert details.
+  -j, --json      Output summary results in raw JSON format for scripting.
+  -h, --help      Display this usage banner and exit.
+
+Examples:
+  isthislegit indeed.com indeedjobs.com
+  isthislegit -j example.com suspect-example.com
+EOF
+}
+
+check_dependencies() {
+    local deps=("curl" "openssl" "jq" "dig")
+    local missing=0
+    local cmd
+    for cmd in "${deps[@]}"; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            echo "[!] Error: Required utility '$cmd' is not installed." >&2
+            missing=1
+        fi
+    done
+    if [[ "$missing" -ne 0 ]]; then
+        exit 1
+    fi
+}
+
+# Lowercase, strip scheme / path / port / trailing dot.
+normalize_domain() {
+    local d="$1"
+    d="${d,,}"
+    d="${d#http://}"
+    d="${d#https://}"
+    d="${d%%/*}"
+    d="${d%%:*}"
+    d="${d%.}"
+    printf '%s' "$d"
+}
+
+# Basic sanity: labels of alnum/hyphen, at least one dot.
+valid_domain_syntax() {
+    local d="$1"
+    [[ "$d" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ ]]
+}
+
+# Abort early on NXDOMAIN / unresolvable names (spec section 5.1).
+check_dns() {
+    local domain="$1"
+    local result
+    result=$(dig +short +time=5 +tries=1 A "$domain" 2>/dev/null | head -n 1)
+    if [[ -z "$result" ]]; then
+        echo "[!] Error: Domain '$domain' failed DNS resolution (NXDOMAIN or offline). Aborting." >&2
+        exit 1
+    fi
+}
+
+# Fetch the leaf cert PEM once per domain; cache to tmpdir.
+# Returns path to PEM on stdout; empty string on failure (port 443 closed etc).
+fetch_cert_pem() {
+    local domain="$1"
+    local safe="${domain//[^a-zA-Z0-9.-]/_}"
+    local pemfile="$TMPDIR_ISTHISLEGIT/cert_$safe.pem"
+    if [[ -s "$pemfile" ]]; then
+        printf '%s' "$pemfile"
+        return 0
+    fi
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 5 openssl s_client -servername "$domain" -connect "$domain:443" </dev/null 2>/dev/null \
+            | openssl x509 2>/dev/null > "$pemfile"
+    else
+        openssl s_client -servername "$domain" -connect "$domain:443" </dev/null 2>/dev/null \
+            | openssl x509 2>/dev/null > "$pemfile"
+    fi
+    if [[ ! -s "$pemfile" ]]; then
+        rm -f "$pemfile"
+        printf ''
+        return 1
+    fi
+    printf '%s' "$pemfile"
+    return 0
+}
+
+get_cert_issuer() {
+    local domain="$1"
+    local pemfile
+    pemfile=$(fetch_cert_pem "$domain") || true
+    if [[ -z "$pemfile" ]]; then
+        echo "Unknown"
+        return 0
+    fi
+    local issuer org
+    issuer=$(openssl x509 -noout -issuer -in "$pemfile" 2>/dev/null)
+    # Prefer O= (e.g. "DigiCert Inc"); many DV CAs (e.g. Let's Encrypt "E6")
+    # have no O field, so fall back to the full issuer string.
+    # Note: openssl prints "O = X" or "O=X" depending on version/input path.
+    org=$(printf '%s' "$issuer" | sed -E -n 's/.*O *= *([^,/]+).*/\1/p' | head -n 1)
+    if [[ -n "$org" ]]; then
+        echo "$org"
+    elif [[ -n "$issuer" ]]; then
+        echo "${issuer#issuer= }"
+    else
+        echo "Unknown"
+    fi
+}
+
+get_cert_sans() {
+    local domain="$1"
+    local pemfile
+    pemfile=$(fetch_cert_pem "$domain") || true
+    if [[ -z "$pemfile" ]]; then
+        echo "Unknown"
+        return 0
+    fi
+    local sans
+    sans=$(openssl x509 -noout -ext subjectAltName -in "$pemfile" 2>/dev/null \
+        | grep -oE 'DNS:[^, ]+' | sed 's/^DNS://' | paste -sd, - | sed 's/,/, /g')
+    if [[ -z "$sans" ]]; then
+        # Fall back to CN when no SAN extension is present.
+        sans=$(openssl x509 -noout -subject -in "$pemfile" 2>/dev/null \
+            | sed -E -n 's/.*CN *= *([^,/]+).*/\1/p' | head -n 1)
+    fi
+    if [[ -z "$sans" ]]; then
+        echo "Unknown"
+    else
+        echo "$sans"
+    fi
+}
+
+# Raw CAB Forum policy OIDs found in the Certificate Policies extension.
+get_cert_policy_oids() {
+    local domain="$1"
+    local pemfile
+    pemfile=$(fetch_cert_pem "$domain") || true
+    if [[ -z "$pemfile" ]]; then
+        printf ''
+        return 0
+    fi
+    openssl x509 -noout -text -in "$pemfile" 2>/dev/null | grep -oE '2\.23\.140\.1\.[0-9.]+' | sort -u
+}
+
+# Classify cert validation level from policy OIDs: EV > OV > IV > DV > Unknown.
+get_cert_class() {
+    local domain="$1"
+    local oids
+    oids=$(get_cert_policy_oids "$domain")
+    if [[ -z "$oids" ]]; then
+        echo "Unknown"
+        return 0
+    fi
+    if grep -qF "$OID_EV" <<<"$oids"; then
+        echo "EV"
+    elif grep -qF "$OID_OV" <<<"$oids"; then
+        echo "OV"
+    elif grep -qF "$OID_IV" <<<"$oids"; then
+        echo "IV"
+    elif grep -qF "$OID_DV" <<<"$oids"; then
+        echo "DV"
+    else
+        echo "Unknown"
+    fi
+}
+
+# Query RDAP once per domain; cache raw JSON to tmpdir.
+rdap_query() {
+    local domain="$1"
+    local safe="${domain//[^a-zA-Z0-9.-]/_}"
+    local jsonfile="$TMPDIR_ISTHISLEGIT/rdap_$safe.json"
+    if [[ -s "$jsonfile" ]]; then
+        printf '%s' "$jsonfile"
+        return 0
+    fi
+    curl -sL --max-time 5 "https://rdap.org/domain/$domain" 2>/dev/null > "$jsonfile" || true
+    if [[ ! -s "$jsonfile" ]] || ! jq -e . "$jsonfile" >/dev/null 2>&1; then
+        rm -f "$jsonfile"
+        printf ''
+        return 1
+    fi
+    printf '%s' "$jsonfile"
+    return 0
+}
+
+get_registration_date() {
+    local domain="$1"
+    local jsonfile
+    jsonfile=$(rdap_query "$domain") || true
+    if [[ -z "$jsonfile" ]]; then
+        echo "Unknown / Lookup Failed"
+        return 0
+    fi
+    local date
+    date=$(jq -r '.events[] | select(.eventAction=="registration") | .eventDate' "$jsonfile" 2>/dev/null | head -n 1)
+    if [[ -z "$date" || "$date" == "null" ]]; then
+        echo "Unknown / Lookup Failed"
+    else
+        echo "${date:0:10}"
+    fi
+}
+
+# Best-effort registrar name from RDAP entities (registrar role or first vCard fn).
+get_registrar() {
+    local domain="$1"
+    local jsonfile
+    jsonfile=$(rdap_query "$domain") || true
+    if [[ -z "$jsonfile" ]]; then
+        echo "Unknown"
+        return 0
+    fi
+    local reg
+    reg=$(jq -r '
+        ((.entities[]? | select(.roles[]? == "registrar") | .vcardArray[1][]? | select(.[0]=="fn") | .[3]) // empty),
+        ((.entities[]? | .vcardArray[1][]? | select(.[0]=="fn") | .[3]) // empty)
+        ' "$jsonfile" 2>/dev/null | head -n 1)
+    if [[ -z "$reg" || "$reg" == "null" ]]; then
+        echo "Unknown"
+    else
+        echo "$reg"
+    fi
+}
+
+# Whole days between YYYY-MM-DD and today; empty string if unparseable.
+domain_age_days() {
+    local ymd="$1"
+    if [[ ! "$ymd" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+        printf ''
+        return 0
+    fi
+    local then now
+    then=$(date -d "$ymd" +%s 2>/dev/null) || { printf ''; return 0; }
+    now=$(date +%s)
+    echo $(( (now - then) / 86400 ))
+}
+
+# Minimal JSON string escaper (handles quotes/backslashes/newlines).
+json_escape() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\n'/\\n}"
+    printf '%s' "$s"
+}
+
+# ---- argument parsing ----
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -v|--verbose) VERBOSE=1; shift ;;
+        -j|--json) JSON_OUT=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        --) shift; break ;;
+        -*) echo "[!] Error: Unknown option '$1'. Use -h for help." >&2; exit 1 ;;
+        *) break ;;
+    esac
+done
+
+if [[ $# -ne 2 ]]; then
+    usage >&2
+    echo "" >&2
+    echo "[!] Error: Expected exactly 2 domains: <legit_domain> <suspect_domain>." >&2
+    exit 1
+fi
+
+LEGIT_DOMAIN=$(normalize_domain "$1")
+SUSPECT_DOMAIN=$(normalize_domain "$2")
+
+if ! valid_domain_syntax "$LEGIT_DOMAIN"; then
+    echo "[!] Error: Invalid domain syntax: '$1'." >&2
+    exit 1
+fi
+if ! valid_domain_syntax "$SUSPECT_DOMAIN"; then
+    echo "[!] Error: Invalid domain syntax: '$2'." >&2
+    exit 1
+fi
+
+check_dependencies
+check_dns "$LEGIT_DOMAIN"
+check_dns "$SUSPECT_DOMAIN"
+
+# ---- data collection ----
+TARGET_DATE=$(get_registration_date "$LEGIT_DOMAIN")
+TARGET_REG=$(get_registrar "$LEGIT_DOMAIN")
+TARGET_ISSUER=$(get_cert_issuer "$LEGIT_DOMAIN")
+TARGET_SANS=$(get_cert_sans "$LEGIT_DOMAIN")
+TARGET_CLASS=$(get_cert_class "$LEGIT_DOMAIN")
+
+SUSPECT_DATE=$(get_registration_date "$SUSPECT_DOMAIN")
+SUSPECT_REG=$(get_registrar "$SUSPECT_DOMAIN")
+SUSPECT_ISSUER=$(get_cert_issuer "$SUSPECT_DOMAIN")
+SUSPECT_SANS=$(get_cert_sans "$SUSPECT_DOMAIN")
+SUSPECT_CLASS=$(get_cert_class "$SUSPECT_DOMAIN")
+
+SUSPECT_AGE_DAYS=$(domain_age_days "$SUSPECT_DATE")
+
+# ---- risk scoring ----
+RISK_SCORE=0
+FINDINGS=()
+
+# Age check: < 90 days => +40 (spec section 4.4).
+if [[ -n "$SUSPECT_AGE_DAYS" ]]; then
+    if [[ "$SUSPECT_AGE_DAYS" -lt 30 ]]; then
+        RISK_SCORE=$((RISK_SCORE + 40))
+        AGE_FLAG="  [CRITICAL: Domain created < 30 days ago]"
+        FINDINGS+=("HIGH RISK: Suspect domain created recently ($SUSPECT_DATE).")
+    elif [[ "$SUSPECT_AGE_DAYS" -lt 90 ]]; then
+        RISK_SCORE=$((RISK_SCORE + 40))
+        AGE_FLAG="  [WARNING: Domain created < 90 days ago]"
+        FINDINGS+=("HIGH RISK: Suspect domain created recently ($SUSPECT_DATE).")
+    else
+        AGE_FLAG=""
+    fi
+else
+    AGE_FLAG=""
+    if [[ "$SUSPECT_DATE" == "Unknown / Lookup Failed" ]]; then
+        FINDINGS+=("UNKNOWN: Could not determine suspect domain age ($SUSPECT_DATE).")
+    fi
+fi
+
+# Cert validation downgrade: target EV/OV but suspect DV => +30.
+if [[ ("$TARGET_CLASS" == "EV" || "$TARGET_CLASS" == "OV") && "$SUSPECT_CLASS" == "DV" ]]; then
+    RISK_SCORE=$((RISK_SCORE + 30))
+    FINDINGS+=("DOWNGRADE: Target uses $TARGET_CLASS ($TARGET_ISSUER) while Suspect uses DV automated cert ($SUSPECT_ISSUER).")
+elif [[ "$TARGET_ISSUER" != "$SUSPECT_ISSUER" && "$TARGET_ISSUER" != "Unknown" && "$SUSPECT_ISSUER" != "Unknown" ]]; then
+    # Same-class issuer difference is display-only (avoids false positives
+    # when both sides legitimately use different DV CAs).
+    FINDINGS+=("NOTE: Certificate Issuers differ ($TARGET_ISSUER vs $SUSPECT_ISSUER) but validation levels are comparable ($TARGET_CLASS vs $SUSPECT_CLASS).")
+fi
+
+# Registrar mismatch => +15 (skipped when either side is unknown).
+if [[ "$TARGET_REG" != "Unknown" && "$SUSPECT_REG" != "Unknown" ]]; then
+    if [[ "${TARGET_REG,,}" != "${SUSPECT_REG,,}" ]]; then
+        RISK_SCORE=$((RISK_SCORE + 15))
+        FINDINGS+=("MISMATCH: Registrars do not align ($TARGET_REG vs $SUSPECT_REG).")
+    fi
+fi
+
+# Verdict thresholds.
+if [[ "$RISK_SCORE" -ge 40 ]]; then
+    VERDICT="LIKELY PHISHING / IMPERSONATION ATTEMPT"
+elif [[ "$RISK_SCORE" -ge 15 ]]; then
+    VERDICT="SUSPICIOUS — MANUAL REVIEW RECOMMENDED"
+else
+    VERDICT="LIKELY LEGITIMATE"
+fi
+
+# ---- output ----
+if [[ "$JSON_OUT" -eq 1 ]]; then
+    findings_json=""
+    first=1
+    for f in "${FINDINGS[@]}"; do
+        if [[ "$first" -eq 1 ]]; then first=0; else findings_json+=", "; fi
+        findings_json+="\"$(json_escape "$f")\""
+    done
+    cat <<EOF
+{"tool": "isthislegit", "version": "$VERSION", "target": {"domain": "$(json_escape "$LEGIT_DOMAIN")", "creation_date": "$(json_escape "$TARGET_DATE")", "registrar": "$(json_escape "$TARGET_REG")", "cert_issuer": "$(json_escape "$TARGET_ISSUER")", "cert_class": "$(json_escape "$TARGET_CLASS")", "cert_sans": "$(json_escape "$TARGET_SANS")"}, "suspect": {"domain": "$(json_escape "$SUSPECT_DOMAIN")", "creation_date": "$(json_escape "$SUSPECT_DATE")", "registrar": "$(json_escape "$SUSPECT_REG")", "cert_issuer": "$(json_escape "$SUSPECT_ISSUER")", "cert_class": "$(json_escape "$SUSPECT_CLASS")", "cert_sans": "$(json_escape "$SUSPECT_SANS")", "age_days": ${SUSPECT_AGE_DAYS:-null}}, "risk_score": $RISK_SCORE, "findings": [$findings_json], "verdict": "$(json_escape "$VERDICT")"}
+EOF
+    exit 0
+fi
+
+cat <<EOF
+  _sthislegit? [v${VERSION}]
+  Domain Impersonation & OSINT Triage Tool
+
+[*] Comparing: $LEGIT_DOMAIN (Target) <---> $SUSPECT_DOMAIN (Suspect)
+
+[+] Target Domain: $LEGIT_DOMAIN
+  |-- Creation Date : $TARGET_DATE
+  |-- Registrar     : $TARGET_REG
+  |-- Cert Issuer   : $TARGET_ISSUER
+  |-- Cert SANs     : $TARGET_SANS
+
+[-] Suspect Domain: $SUSPECT_DOMAIN
+  |-- Creation Date : $SUSPECT_DATE${AGE_FLAG:-}
+  |-- Registrar     : $SUSPECT_REG
+  |-- Cert Issuer   : $SUSPECT_ISSUER
+  |-- Cert SANs     : $SUSPECT_SANS
+
+----------------------------------------------------------------------
+[!] RISK ANALYSIS (score: $RISK_SCORE):
+EOF
+
+if [[ ${#FINDINGS[@]} -eq 0 ]]; then
+    echo "  [+] No significant risk indicators found."
+else
+    for f in "${FINDINGS[@]}"; do
+        echo "  [!] $f"
+    done
+fi
+
+echo ""
+echo "VERDICT: $VERDICT"
+echo ""
+
+if [[ "$VERBOSE" -eq 1 ]]; then
+    echo "==================== VERBOSE ===================="
+    echo "--- Target cert policy OIDs ($LEGIT_DOMAIN):"
+    oids=$(get_cert_policy_oids "$LEGIT_DOMAIN")
+    echo "${oids:-  (none / unavailable)}  [class: $TARGET_CLASS]"
+    echo "--- Suspect cert policy OIDs ($SUSPECT_DOMAIN):"
+    oids=$(get_cert_policy_oids "$SUSPECT_DOMAIN")
+    echo "${oids:-  (none / unavailable)}  [class: $SUSPECT_CLASS]"
+    echo ""
+    for d in "$LEGIT_DOMAIN" "$SUSPECT_DOMAIN"; do
+        pem=$(fetch_cert_pem "$d") || pem=""
+        echo "--- TLS cert details ($d):"
+        if [[ -n "$pem" ]]; then
+            openssl x509 -noout -issuer -subject -dates -ext subjectAltName -in "$pem" 2>/dev/null || echo "  (cert detail unavailable)"
+        else
+            echo "  (no TLS certificate retrieved — port 443 closed or handshake failed)"
+        fi
+        echo ""
+        rj=$(rdap_query "$d") || rj=""
+        echo "--- RDAP raw JSON ($d):"
+        if [[ -n "$rj" ]]; then
+            cat "$rj"
+        else
+            echo "  (RDAP lookup failed)"
+        fi
+        echo ""
+    done
+fi
