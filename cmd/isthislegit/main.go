@@ -39,7 +39,7 @@ Options:
   -h, --help      Display this usage banner and exit.
 
 Examples:
-  isthislegit indeed.com indeedjobs.com
+  isthislegit jdsoft.com jdsoftcareers.com
   isthislegit -j example.com suspect-example.com
 `, version)
 }

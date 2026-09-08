@@ -6,7 +6,7 @@ import (
 )
 
 func TestScorePhishing(t *testing.T) {
-	target := DomainData{Domain: "indeed.com", Date: "1998-03-04", Registrar: "MarkMonitor Inc.", Issuer: "DigiCert Inc", Class: "EV", AgeDays: 9000, AgeKnown: true}
+	target := DomainData{Domain: "jdsoft.com", Date: "1998-03-04", Registrar: "MarkMonitor Inc.", Issuer: "DigiCert Inc", Class: "EV", AgeDays: 9000, AgeKnown: true}
 	suspect := DomainData{Domain: "evil.com", Date: time.Now().AddDate(0, 0, -10).Format("2006-01-02"), Registrar: "NameCheap, Inc.", Issuer: "Let's Encrypt", Class: "DV", AgeDays: 10, AgeKnown: true}
 	r := Score(target, suspect)
 	if r.Score != 150 {
