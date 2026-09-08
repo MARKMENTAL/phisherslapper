@@ -34,24 +34,28 @@ type Details struct {
 	HasCert   bool
 }
 
+// oidClassPriority maps policy OIDs to validation classes in priority
+// order: EV > OV > IV > DV (mirrors bash get_cert_class).
+var oidClassPriority = []struct {
+	oid   string
+	class string
+}{
+	{OIDEV, "EV"},
+	{OIDDOV, "OV"},
+	{OIDDIV, "IV"},
+	{OIDDV, "DV"},
+}
+
 // Classify maps a set of policy OID strings to a validation class.
-// Priority: EV > OV > IV > DV > Unknown (mirrors bash get_cert_class).
 func Classify(oids []string) string {
 	set := make(map[string]struct{}, len(oids))
 	for _, o := range oids {
 		set[strings.TrimSpace(o)] = struct{}{}
 	}
-	if _, ok := set[OIDEV]; ok {
-		return "EV"
-	}
-	if _, ok := set[OIDDOV]; ok {
-		return "OV"
-	}
-	if _, ok := set[OIDDIV]; ok {
-		return "IV"
-	}
-	if _, ok := set[OIDDV]; ok {
-		return "DV"
+	for _, p := range oidClassPriority {
+		if _, ok := set[p.oid]; ok {
+			return p.class
+		}
 	}
 	return "Unknown"
 }
@@ -127,17 +131,25 @@ func FromLeaf(leaf *x509.Certificate) *Details {
 		d.Issuer = "Unknown"
 	}
 
-	if len(leaf.DNSNames) > 0 {
-		d.SANs = append([]string(nil), leaf.DNSNames...)
-	} else if leaf.Subject.CommonName != "" {
-		d.SANs = []string{leaf.Subject.CommonName}
-	}
+	d.SANs = sansFromLeaf(leaf)
 
 	for _, oid := range leaf.PolicyIdentifiers {
 		d.OIDs = append(d.OIDs, oid.String())
 	}
 	d.Class = Classify(d.OIDs)
 	return d
+}
+
+// sansFromLeaf returns DNS SANs, falling back to the subject CN when no
+// SAN extension is present (mirrors bash get_cert_sans).
+func sansFromLeaf(leaf *x509.Certificate) []string {
+	if len(leaf.DNSNames) > 0 {
+		return append([]string(nil), leaf.DNSNames...)
+	}
+	if leaf.Subject.CommonName != "" {
+		return []string{leaf.Subject.CommonName}
+	}
+	return nil
 }
 
 // SANsString joins SANs for display, or "Unknown" when empty.

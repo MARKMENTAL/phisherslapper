@@ -80,14 +80,14 @@ func fetchDomain(ctx context.Context, client *http.Client, domain string, now ti
 
 	res.info.Date = rdap.RegistrationDate(rd)
 	res.info.Registrar = rdap.Registrar(rd)
+	// Default to Unknown; overwrite from the leaf cert when present.
+	res.info.Issuer = "Unknown"
+	res.info.Class = "Unknown"
+	res.info.SANs = "Unknown"
 	if cd != nil && cd.HasCert {
 		res.info.Issuer = cd.Issuer
 		res.info.Class = cd.Class
 		res.info.SANs = cd.SANsString()
-	} else {
-		res.info.Issuer = "Unknown"
-		res.info.Class = "Unknown"
-		res.info.SANs = "Unknown"
 	}
 	if res.info.Registrar == "" {
 		res.info.Registrar = "Unknown"

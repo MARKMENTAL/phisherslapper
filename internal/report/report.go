@@ -79,16 +79,21 @@ func Human(d Data) string {
 	fmt.Fprintf(&b, "  |-- Cert SANs     : %s\n", d.Suspect.SANs)
 	b.WriteString("\n----------------------------------------------------------------------\n")
 	fmt.Fprintf(&b, "[!] RISK ANALYSIS (score: %d):\n", d.Score)
-	if len(d.Findings) == 0 {
-		b.WriteString("  [+] No significant risk indicators found.\n")
-	} else {
-		for _, f := range d.Findings {
-			fmt.Fprintf(&b, "  [!] %s\n", f)
-		}
-	}
+	writeFindings(&b, d.Findings)
 	b.WriteString("\n")
 	fmt.Fprintf(&b, "VERDICT: %s\n\n", d.Verdict)
 	return b.String()
+}
+
+// writeFindings renders the findings list, or a clean bill when empty.
+func writeFindings(b *strings.Builder, findings []string) {
+	if len(findings) == 0 {
+		b.WriteString("  [+] No significant risk indicators found.\n")
+		return
+	}
+	for _, f := range findings {
+		fmt.Fprintf(b, "  [!] %s\n", f)
+	}
 }
 
 // JSON renders the machine-readable summary for scripting.
@@ -132,28 +137,37 @@ func JSON(d Data) string {
 	return string(raw) + "\n"
 }
 
+// oidSection describes one domain's policy-OID block in verbose output.
+type oidSection struct {
+	label  string
+	domain string
+	class  string
+	cert   *cert.Details
+}
+
+// writeOIDs renders the raw policy OIDs for one domain.
+func writeOIDs(b *strings.Builder, s oidSection) {
+	fmt.Fprintf(b, "--- %s cert policy OIDs (%s):\n", s.label, s.domain)
+	if s.cert == nil || len(s.cert.OIDs) == 0 {
+		fmt.Fprintf(b, "  (none / unavailable)  [class: %s]\n", s.class)
+		return
+	}
+	for _, o := range s.cert.OIDs {
+		fmt.Fprintf(b, "  %s\n", o)
+	}
+	fmt.Fprintf(b, "  [class: %s]\n", s.class)
+}
+
 // Verbose renders raw OIDs, TLS details, and RDAP JSON for both domains.
 func Verbose(d Data) string {
 	var b strings.Builder
 	b.WriteString("==================== VERBOSE ====================\n")
 	// Bash ordering: target OIDs then suspect OIDs, then per-domain blocks.
-	b.WriteString(fmt.Sprintf("--- Target cert policy OIDs (%s):\n", d.TargetDomain))
-	if d.TargetCert == nil || len(d.TargetCert.OIDs) == 0 {
-		fmt.Fprintf(&b, "  (none / unavailable)  [class: %s]\n", d.Target.Class)
-	} else {
-		for _, o := range d.TargetCert.OIDs {
-			fmt.Fprintf(&b, "  %s\n", o)
-		}
-		fmt.Fprintf(&b, "  [class: %s]\n", d.Target.Class)
-	}
-	fmt.Fprintf(&b, "--- Suspect cert policy OIDs (%s):\n", d.SuspectDomain)
-	if d.SuspectCert == nil || len(d.SuspectCert.OIDs) == 0 {
-		fmt.Fprintf(&b, "  (none / unavailable)  [class: %s]\n", d.Suspect.Class)
-	} else {
-		for _, o := range d.SuspectCert.OIDs {
-			fmt.Fprintf(&b, "  %s\n", o)
-		}
-		fmt.Fprintf(&b, "  [class: %s]\n", d.Suspect.Class)
+	for _, s := range []oidSection{
+		{"Target", d.TargetDomain, d.Target.Class, d.TargetCert},
+		{"Suspect", d.SuspectDomain, d.Suspect.Class, d.SuspectCert},
+	} {
+		writeOIDs(&b, s)
 	}
 	b.WriteString("\n")
 	writeTLS := func(domain string, c *cert.Details) {

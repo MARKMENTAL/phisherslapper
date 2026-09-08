@@ -104,7 +104,7 @@ func RegistrationDate(r *Result) string {
 }
 
 // Registrar returns the best-effort registrar name, or "Unknown".
-// Prefers entities with the registrar role, else first vCard fn.
+// Prefers entities with the registrar role, falling back to the first vCard fn.
 func Registrar(r *Result) string {
 	if r == nil || !r.Found || r.Resp == nil {
 		return "Unknown"

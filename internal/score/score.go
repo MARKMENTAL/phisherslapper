@@ -27,20 +27,20 @@ type Result struct {
 	AgeFlag  string
 }
 
+// classLongNames maps validation classes to human-readable names.
+var classLongNames = map[string]string{
+	"EV": "Extended Validation",
+	"OV": "Organization Validated",
+	"DV": "Domain Validated",
+	"IV": "Individual Validated",
+}
+
 // ClassLong returns the human-readable validation name.
 func ClassLong(c string) string {
-	switch c {
-	case "EV":
-		return "Extended Validation"
-	case "OV":
-		return "Organization Validated"
-	case "DV":
-		return "Domain Validated"
-	case "IV":
-		return "Individual Validated"
-	default:
-		return "Unknown"
+	if name, ok := classLongNames[c]; ok {
+		return name
 	}
+	return "Unknown"
 }
 
 // VerifyDataQuality fails closed when RDAP dates or TLS data are missing
@@ -87,11 +87,12 @@ func Score(target, suspect DomainData) Result {
 
 	// Cert validation downgrade: target EV/OV but suspect DV => +40.
 	// Same-class issuer differences are display-only (no points).
-	if (target.Class == "EV" || target.Class == "OV") && suspect.Class == "DV" {
+	isDowngrade := (target.Class == "EV" || target.Class == "OV") && suspect.Class == "DV"
+	if isDowngrade {
 		r.Score += 40
 		r.Findings = append(r.Findings, fmt.Sprintf("DOWNGRADE: Target uses %s (%s) while Suspect uses DV automated cert (%s).", target.Class, target.Issuer, suspect.Issuer))
-	} else if target.Issuer != suspect.Issuer && target.Issuer != "Unknown" && suspect.Issuer != "Unknown" && target.Issuer != "" && suspect.Issuer != "" {
-		// Avoids false positives when both sides legitimately use different DV CAs.
+	}
+	if !isDowngrade && isIssuerNote(target, suspect) {
 		r.Findings = append(r.Findings, fmt.Sprintf("NOTE: Certificate Issuers differ (%s vs %s) but validation levels are comparable (%s vs %s).", target.Issuer, suspect.Issuer, target.Class, suspect.Class))
 	}
 
@@ -107,16 +108,30 @@ func Score(target, suspect DomainData) Result {
 	return r
 }
 
+// isIssuerNote reports a display-only issuer difference: distinct known
+// issuers at comparable validation levels. Avoids false positives when both
+// sides legitimately use different DV CAs.
+func isIssuerNote(target, suspect DomainData) bool {
+	known := func(s string) bool { return s != "" && s != "Unknown" }
+	return target.Issuer != suspect.Issuer && known(target.Issuer) && known(suspect.Issuer)
+}
+
+// verdictScale maps minimum scores onto verdicts, highest first (see --scale).
+var verdictScale = []struct {
+	min     int
+	verdict string
+}{
+	{51, "LIKELY PHISHING / IMPERSONATION ATTEMPT"},
+	{40, "SUSPICIOUS — MANUAL REVIEW RECOMMENDED"},
+	{15, "LIKELY UNRELATED / MISCONFIGURED"},
+}
+
 // Verdict maps the total score onto a verdict (see --scale).
 func Verdict(score int) string {
-	switch {
-	case score >= 51:
-		return "LIKELY PHISHING / IMPERSONATION ATTEMPT"
-	case score >= 40:
-		return "SUSPICIOUS — MANUAL REVIEW RECOMMENDED"
-	case score >= 15:
-		return "LIKELY UNRELATED / MISCONFIGURED"
-	default:
-		return "LIKELY LEGITIMATE"
+	for _, v := range verdictScale {
+		if score >= v.min {
+			return v.verdict
+		}
 	}
+	return "LIKELY LEGITIMATE"
 }
