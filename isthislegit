@@ -30,6 +30,11 @@ OID_DV="2.23.140.1.2.1"    # Domain Validated (no identity asserted)
 OID_OV="2.23.140.1.2.2"    # Organization Validated (organization identity asserted)
 OID_IV="2.23.140.1.2.3"    # Individual Validated
 
+# Fetch policy: rdap.org and remote TLS handshakes are occasionally flaky,
+# so transient lookups are retried a few times before giving up.
+MAX_ATTEMPTS=3
+RETRY_DELAY=1
+
 TMPDIR_ISTHISLEGIT="$(mktemp -d 2>/dev/null || echo "/tmp/isthislegit.$$")"
 mkdir -p "$TMPDIR_ISTHISLEGIT" 2>/dev/null
 cleanup() {
@@ -51,6 +56,7 @@ Usage:
 Options:
   -v, --verbose   Output raw JSON responses from RDAP and full TLS cert details.
   -j, --json      Output summary results in raw JSON format for scripting.
+  --scale         Show the scoring scale table and exit (no domains required).
   -h, --help      Display this usage banner and exit.
 
 Examples:
@@ -111,6 +117,7 @@ check_dns() {
 # =====================================================================
 # Fetch the leaf cert PEM once per domain; cache to tmpdir.
 # Returns path to PEM on stdout; empty string on failure (port 443 closed etc).
+# Transient handshake failures are retried (MAX_ATTEMPTS) before giving up.
 fetch_cert_pem() {
     local domain="$1"
     local safe="${domain//[^a-zA-Z0-9.-]/_}"
@@ -119,20 +126,26 @@ fetch_cert_pem() {
         printf '%s' "$pemfile"
         return 0
     fi
-    if command -v timeout >/dev/null 2>&1; then
-        timeout 5 openssl s_client -servername "$domain" -connect "$domain:443" </dev/null 2>/dev/null \
-            | openssl x509 2>/dev/null > "$pemfile"
-    else
-        openssl s_client -servername "$domain" -connect "$domain:443" </dev/null 2>/dev/null \
-            | openssl x509 2>/dev/null > "$pemfile"
-    fi
-    if [[ ! -s "$pemfile" ]]; then
+    local attempt
+    for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)); do
+        if command -v timeout >/dev/null 2>&1; then
+            timeout 5 openssl s_client -servername "$domain" -connect "$domain:443" </dev/null 2>/dev/null \
+                | openssl x509 2>/dev/null > "$pemfile"
+        else
+            openssl s_client -servername "$domain" -connect "$domain:443" </dev/null 2>/dev/null \
+                | openssl x509 2>/dev/null > "$pemfile"
+        fi
+        if [[ -s "$pemfile" ]]; then
+            printf '%s' "$pemfile"
+            return 0
+        fi
         rm -f "$pemfile"
-        printf ''
-        return 1
-    fi
-    printf '%s' "$pemfile"
-    return 0
+        if [[ "$attempt" -lt "$MAX_ATTEMPTS" ]]; then
+            sleep "$RETRY_DELAY"
+        fi
+    done
+    printf ''
+    return 1
 }
 
 get_cert_issuer() {
@@ -219,6 +232,7 @@ get_cert_class() {
 # RDAP registration collectors (all backed by one cached JSON per domain)
 # =====================================================================
 # Query RDAP once per domain; cache raw JSON to tmpdir.
+# Transient lookup failures are retried (MAX_ATTEMPTS) before giving up.
 rdap_query() {
     local domain="$1"
     local safe="${domain//[^a-zA-Z0-9.-]/_}"
@@ -227,14 +241,20 @@ rdap_query() {
         printf '%s' "$jsonfile"
         return 0
     fi
-    curl -sL --max-time 5 "https://rdap.org/domain/$domain" 2>/dev/null > "$jsonfile" || true
-    if [[ ! -s "$jsonfile" ]] || ! jq -e . "$jsonfile" >/dev/null 2>&1; then
+    local attempt
+    for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)); do
+        curl -sL --max-time 5 "https://rdap.org/domain/$domain" 2>/dev/null > "$jsonfile" || true
+        if [[ -s "$jsonfile" ]] && jq -e . "$jsonfile" >/dev/null 2>&1; then
+            printf '%s' "$jsonfile"
+            return 0
+        fi
         rm -f "$jsonfile"
-        printf ''
-        return 1
-    fi
-    printf '%s' "$jsonfile"
-    return 0
+        if [[ "$attempt" -lt "$MAX_ATTEMPTS" ]]; then
+            sleep "$RETRY_DELAY"
+        fi
+    done
+    printf ''
+    return 1
 }
 
 get_registration_date() {
@@ -310,11 +330,13 @@ json_escape() {
 
 # Parse flags and positional domains; sets VERBOSE, JSON_OUT,
 # LEGIT_DOMAIN and SUSPECT_DOMAIN globals. Exits on misuse.
+# --scale prints the scoring table and exits without requiring domains.
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -v|--verbose) VERBOSE=1; shift ;;
             -j|--json) JSON_OUT=1; shift ;;
+            --scale) render_scale; exit 0 ;;
             -h|--help) usage; exit 0 ;;
             --) shift; break ;;
             -*) echo "[!] Error: Unknown option '$1'. Use -h for help." >&2; exit 1 ;;
@@ -406,17 +428,17 @@ verify_data_quality() {
     fi
 }
 
-# Age check: suspect created < 90 days => +40.
+# Age check: suspect created < 90 days => +80.
 # Post-gate SUSPECT_AGE_DAYS is guaranteed non-empty; the else arm only
 # clears the display flag for old domains.
 score_age() {
     if [[ -n "$SUSPECT_AGE_DAYS" ]]; then
         if [[ "$SUSPECT_AGE_DAYS" -lt 30 ]]; then
-            RISK_SCORE=$((RISK_SCORE + 40))
+            RISK_SCORE=$((RISK_SCORE + 80))
             AGE_FLAG="  [CRITICAL: Domain created < 30 days ago]"
             FINDINGS+=("HIGH RISK: Suspect domain created recently ($SUSPECT_DATE).")
         elif [[ "$SUSPECT_AGE_DAYS" -lt 90 ]]; then
-            RISK_SCORE=$((RISK_SCORE + 40))
+            RISK_SCORE=$((RISK_SCORE + 80))
             AGE_FLAG="  [WARNING: Domain created < 90 days ago]"
             FINDINGS+=("HIGH RISK: Suspect domain created recently ($SUSPECT_DATE).")
         else
@@ -427,11 +449,11 @@ score_age() {
     fi
 }
 
-# Cert validation downgrade: target EV/OV but suspect DV => +30.
+# Cert validation downgrade: target EV/OV but suspect DV => +40.
 # Same-class issuer differences are display-only (no points).
 score_cert_downgrade() {
     if [[ ("$TARGET_CLASS" == "EV" || "$TARGET_CLASS" == "OV") && "$SUSPECT_CLASS" == "DV" ]]; then
-        RISK_SCORE=$((RISK_SCORE + 30))
+        RISK_SCORE=$((RISK_SCORE + 40))
         FINDINGS+=("DOWNGRADE: Target uses $TARGET_CLASS ($TARGET_ISSUER) while Suspect uses DV automated cert ($SUSPECT_ISSUER).")
     elif [[ "$TARGET_ISSUER" != "$SUSPECT_ISSUER" && "$TARGET_ISSUER" != "Unknown" && "$SUSPECT_ISSUER" != "Unknown" ]]; then
         # Avoids false positives when both sides legitimately use different DV CAs.
@@ -439,22 +461,24 @@ score_cert_downgrade() {
     fi
 }
 
-# Registrar mismatch => +15 (skipped when either side is unknown).
+# Registrar mismatch => +30 (skipped when either side is unknown).
 score_registrar() {
     if [[ "$TARGET_REG" != "Unknown" && "$SUSPECT_REG" != "Unknown" ]]; then
         if [[ "${TARGET_REG,,}" != "${SUSPECT_REG,,}" ]]; then
-            RISK_SCORE=$((RISK_SCORE + 15))
+            RISK_SCORE=$((RISK_SCORE + 30))
             FINDINGS+=("MISMATCH: Registrars do not align ($TARGET_REG vs $SUSPECT_REG).")
         fi
     fi
 }
 
-# Map the total score onto a verdict.
+# Map the total score onto a verdict (see --scale for the full table).
 determine_verdict() {
-    if [[ "$RISK_SCORE" -ge 40 ]]; then
+    if [[ "$RISK_SCORE" -ge 51 ]]; then
         VERDICT="LIKELY PHISHING / IMPERSONATION ATTEMPT"
-    elif [[ "$RISK_SCORE" -ge 15 ]]; then
+    elif [[ "$RISK_SCORE" -ge 40 ]]; then
         VERDICT="SUSPICIOUS — MANUAL REVIEW RECOMMENDED"
+    elif [[ "$RISK_SCORE" -ge 15 ]]; then
+        VERDICT="LIKELY UNRELATED / MISCONFIGURED"
     else
         VERDICT="LIKELY LEGITIMATE"
     fi
@@ -463,6 +487,35 @@ determine_verdict() {
 # =====================================================================
 # Output renderers
 # =====================================================================
+
+# Static scoring-scale reference table (no lookups performed).
+render_scale() {
+    cat <<EOF
+isthislegit? [v${VERSION}] — Scoring Scale (max total: 150)
+
+Signals:
+  +-----------------------------------------------+--------+
+  | Signal                                        | Points |
+  +-----------------------------------------------+--------+
+  | Suspect domain age < 30 days (CRITICAL)       |  +80   |
+  | Suspect domain age 30-89 days (WARNING)       |  +80   |
+  | Cert downgrade: target EV/OV vs suspect DV    |  +40   |
+  | Registrar mismatch                            |  +30   |
+  | Same-class issuer difference (display only)   |   +0   |
+  | Unknown registrar (best-effort field)         |   +0   |
+  +-----------------------------------------------+--------+
+
+Verdicts:
+  +--------+----------------------------------------+
+  | Score  | Verdict                                |
+  +--------+----------------------------------------+
+  | 0–14   | LIKELY LEGITIMATE                      |
+  | 15–39  | LIKELY UNRELATED / MISCONFIGURED       |
+  | 40–50  | SUSPICIOUS — MANUAL REVIEW RECOMMENDED |
+  | 51+    | LIKELY PHISHING / IMPERSONATION ATTEMPT|
+  +--------+----------------------------------------+
+EOF
+}
 
 # Machine-readable summary for scripting.
 render_json() {
