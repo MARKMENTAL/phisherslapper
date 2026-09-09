@@ -5,11 +5,13 @@
 </head>
 <body bgcolor="#002b36" text="#a3b8b9" link="#859900" vlink="#b58900">
 <font color="#b58900"><h1>Package score</h1></font>
-<p>Deterministic risk scoring: domain-age check (contextual tiers with
-stacking and shared-cert discount), certificate
-downgrade check (+40), and registrar mismatch (+30), mapped onto a
-four-tier verdict. Sources: <tt>internal/score/score.go</tt>,
-<tt>internal/score/date.go</tt>.</p>
+<p>Deterministic risk scoring with a relationship-gated five-way verdict:
+contextual domain-age tiers, certificate downgrade (+40), registrar
+mismatch (+30), DNS resolution tampering (+50), rogue-redirection signals
+(per-path TLS divergence +50, origin-AS split +30, hosts-file override
++50), and display-only sender-authority/chronology context. Sources:
+<tt>internal/score/score.go</tt>, <tt>internal/score/date.go</tt>. Max
+total is 330.</p>
 
 <hr>
 <a name="DomainData"></a>
@@ -23,18 +25,44 @@ four-tier verdict. Sources: <tt>internal/score/score.go</tt>,
     SANs      string // comma-joined, or "Unknown"
     AgeDays   int
     AgeKnown  bool
+    DNSTampered bool          // suppression/NS split (scores on suspect)
+    DNSSplit    dns.SplitKind // split direction (horizon never scores)
+    DNSDetail   string        // human-readable split description
+    SysIP       string // first system-resolved A record, "" when none
+    PubIP       string // first public-resolved A record, "" when none
+    PathChecked  bool   // both paths resolved to an IP
+    PathComplete bool   // both per-path TLS identities fetched
+    PathMatch    bool   // per-path TLS identities agree
+    PathDetail   string // mismatch description
+    SysASN       string // origin AS via local path, e.g. "AS15169"
+    PubASN       string // origin AS via public path
+    SysASNNet    string // prefix/country detail, e.g. "8.8.8.0/24, US"
+    PubASNNet    string
+    ASNChecked   bool   // both paths attributed
+    ASNMatch     bool   // both paths share an origin AS
+    HostsHit     bool   // static hosts-file mapping exists
+    HostsIP      string // the mapped IP
+    SPFChecked    bool   // target SPF was retrieved and evaluated
+    SPFAuthorized bool   // suspect IP is covered by target SPF
+    SPFCover      string // covering mechanism, e.g. "include:_spf.google.com"
+    DMARCPolicy   string // target DMARC p= value, "" when unpublished
 }</pre></td></tr></table>
-<p>Collected triage fields for one domain; the scoring input.</p>
+<p>Collected triage fields for one domain; the scoring input. Raw
+addresses are retained for per-path interrogation only and are never
+compared for points.</p>
 
 <hr>
 <a name="Result"></a>
 <font color="#859900"><h2>Result</h2></font>
 <table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>type Result struct {
-    Score    int
-    Findings []string
-    Verdict  string
-    AgeFlag  string // display suffix for young suspect domains
+    Score        int
+    Findings     []string
+    Verdict      string
+    AgeFlag      string // display suffix for young suspect domains
+    Relationship string // identical | san_endorsed | spf_endorsed | lookalike | unrelated
 }</pre></td></tr></table>
+<p>Scoring outcome. <tt>Relationship</tt> names the target/suspect
+relationship (see <tt>Score</tt>); it gates the LEGITIMATE verdict.</p>
 
 <hr>
 <a name="ClassLong"></a>
@@ -61,23 +89,41 @@ The CLI aborts instead of printing a verdict built on missing data.</p>
 while still attaching DNS NOTEs. Suspect age
 is contextual: the full tier (&lt; 30d: 80, 30-89d: 40) needs company
 (registrar mismatch or cert downgrade), otherwise the next tier down;
-shared certificate infrastructure (either domain in the other's SANs,
-exactly or via parent wildcard) halves whatever remains. Target EV/OV versus
+endorsed infrastructure (shared certificate SANs or target SPF coverage)
+halves whatever remains. Target EV/OV versus
 suspect DV adds 40 as DOWNGRADE; a same-class issuer difference is a
 display-only NOTE (+0). Case-insensitive registrar mismatch adds 30,
-skipped when either side is unknown. Suspect-side DNS suppression and NS
+skipped when either side is unknown; a shared known registrar is a
+display-only NOTE. Target DMARC policy is a display-only NOTE. Suspect-side
+DNS suppression and NS
 splits add 50; split-horizon shapes and anything target-side are
-display-only NOTEs (+0). Identical domains force score zero and LEGITIMATE
-while still attaching DNS NOTEs.</p>
+display-only NOTEs (+0). Rogue redirection on the suspect side: divergent
+per-path TLS identities add 50, split origin AS adds 30, a hosts-file
+override adds 50 (target-side and inconclusive probes stay display-only).
+A suspect far older than a very young target (under 90d vs over a year)
+adds a display-only CHRONOLOGY NOTE — the pair was likely fed backwards.
+Every pair is classified (identical, SAN/SPF-endorsed, lookalike via
+confusable-aware label similarity, or unrelated): LEGITIMATE requires a
+relationship, so unrelated pairs scoring 0-39 read UNRELATED with a
+zero-trust NO AUTHORITY finding instead. SUSPICIOUS and PHISHING bands
+keep their verdicts. The 15-39 band appends an EXPLANATION finding
+(malicious-infrastructure vs business-incompetence readings).</p>
 <table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>r := score.Score(target, suspect)
-// r.Score, r.Findings, r.Verdict, r.AgeFlag</pre></td></tr></table>
+// r.Score, r.Findings, r.Verdict, r.Relationship, r.AgeFlag</pre></td></tr></table>
 
 <hr>
 <a name="Verdict"></a>
 <font color="#859900"><h2>Verdict</h2></font>
 <table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func Verdict(score int) string</pre></td></tr></table>
 <p>Maps the total via threshold table: 51+ phishing, 40+ suspicious, 15+
-unrelated/misconfigured, otherwise legitimate.</p>
+malicious-or-negligent (related pairs), otherwise legitimate (related
+pairs). Unrelated pairs scoring 0-39 map to the UNRELATED verdict
+instead — see <tt>Score</tt>. Verdict strings live in named constants
+(<tt>VerdictPhishing</tt>, <tt>VerdictSuspicious</tt>,
+<tt>VerdictMaliciousOrNegligent</tt>, <tt>VerdictLegitimate</tt>,
+<tt>VerdictUnrelated</tt>); relationships in <tt>RelIdentical</tt>,
+<tt>RelSANEndorsed</tt>, <tt>RelSPFEndorsed</tt>, <tt>RelLookalike</tt>,
+<tt>RelUnrelated</tt>. Max total is 330.</p>
 
 <hr>
 <a name="ValidISODate"></a>

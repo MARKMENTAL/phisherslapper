@@ -15,15 +15,16 @@ classification from policy OIDs. Source: <tt>internal/cert/cert.go</tt>.</p>
 <a name="Details"></a>
 <font color="#859900"><h2>Details</h2></font>
 <table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>type Details struct {
-    Issuer    string    // Organization, or fallback issuer string
-    Class     string    // EV, OV, IV, DV, or Unknown
-    SANs      []string  // DNS SANs (CN fallback), empty when unavailable
-    OIDs      []string  // raw policy OIDs found
-    Subject   string
-    IssuerStr string
-    NotBefore time.Time
-    NotAfter  time.Time
-    HasCert   bool
+    Issuer      string    // Organization, or fallback issuer string
+    Class       string    // EV, OV, IV, DV, or Unknown
+    SANs        []string  // DNS SANs (CN fallback), empty when unavailable
+    OIDs        []string  // raw policy OIDs found
+    Subject     string
+    IssuerStr   string
+    Fingerprint string    // SHA-256 of the raw leaf, hex-encoded
+    NotBefore   time.Time
+    NotAfter    time.Time
+    HasCert     bool
 }</pre></td></tr></table>
 <p>Extracted leaf-certificate fields. <tt>Issuer</tt> prefers the
 <tt>Organization</tt> attribute and falls back to Common Name, then the full
@@ -51,6 +52,29 @@ Transient failures are retried up to 3 times with a 1 second delay.</p>
 <tr><td><tt>domain</tt></td><td>Already-normalized domain to dial.</td></tr>
 <tr><td><tt>perCall</tt></td><td>Per-attempt deadline (5 seconds in the CLI).</td></tr>
 </table>
+
+<hr>
+<a name="InspectAddr"></a>
+<font color="#859900"><h2>InspectAddr</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func InspectAddr(ctx context.Context, ip net.IP, domain string, perCall time.Duration) (*Details, error)</pre></td></tr></table>
+<p>Dials <tt>ip:443</tt> directly (bypassing the system resolver) while
+presenting <tt>domain</tt> as SNI, capturing the TLS identity served at
+one resolution-path endpoint. The CLI fetches one <tt>Details</tt> per
+path (system-resolved IP vs public-resolved IP) so
+<tt>ComparePaths</tt> can diff them. Same 3-attempt retry posture as
+<tt>InspectDomain</tt>.</p>
+
+<hr>
+<a name="ComparePaths"></a>
+<font color="#859900"><h2>ComparePaths</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func ComparePaths(sys, pub *Details) (match, complete bool, detail string)</pre></td></tr></table>
+<p>Pure comparison of the TLS identities served at the system-resolved and
+public-resolved endpoints: issuer organization, validation class, SAN
+set (order/case-insensitive), and leaf SHA-256 fingerprint. Reports
+whether both endpoints were interrogated (<tt>complete</tt>), whether
+the identities agree (<tt>match</tt>), and a human-readable mismatch
+description. Missing certificates fail open — incomplete, never a
+mismatch. Safe to unit test.</p>
 
 <hr>
 <a name="FromLeaf"></a>

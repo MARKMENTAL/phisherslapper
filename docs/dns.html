@@ -6,8 +6,11 @@
 <body bgcolor="#002b36" text="#a3b8b9" link="#859900" vlink="#b58900">
 <font color="#b58900"><h1>Package dns</h1></font>
 <p>Domain normalization, syntax validation, DNS pre-flight resolution
-checks, and multi-resolver consistency cross-checks. Sources:
-<tt>internal/dns/dns.go</tt>, <tt>internal/dns/resolvers.go</tt>.</p>
+checks, multi-resolver consistency cross-checks, static hosts-file
+override detection, origin-AS attribution, and SPF/DMARC sender-authority
+probes. Sources: <tt>internal/dns/dns.go</tt>,
+<tt>internal/dns/resolvers.go</tt>, <tt>internal/dns/hosts.go</tt>,
+<tt>internal/dns/asn.go</tt>, <tt>internal/dns/spf.go</tt>.</p>
 
 <hr>
 <a name="NormalizeDomain"></a>
@@ -32,13 +35,19 @@ dns.ValidSyntax("no-dot")      // =&gt; false</pre></td></tr></table>
 <a name="DomainCheck"></a>
 <font color="#859900"><h2>DomainCheck</h2></font>
 <table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>type DomainCheck struct {
-    SystemLive bool
-    PublicLive bool
+    SystemLive  bool
+    PublicLive  bool
+    SystemAddrs []net.IP
+    PublicAddrs []net.IP
+    HostsHit    bool
+    HostsIP     string
     Consistency Consistency
 }</pre></td></tr></table>
 <p>One domain's full probe: system liveness for pre-flight gating, public
-liveness for suppression attribution, and the aggregate consistency
-verdict. The pre-flight gate aborts on system failure and reuses these
+liveness for suppression attribution, the aggregate consistency
+verdict, the first live A record per side (retained for per-path
+interrogation — never scored by raw address), and the hosts-file override
+state. The pre-flight gate aborts on system failure and reuses these
 outcomes downstream, so each resolver is queried exactly once per
 domain.</p>
 
@@ -91,6 +100,78 @@ votes is never tampering. Never fails closed.</p>
 <tr><td><tt>domain</tt></td><td>Already-normalized domain to cross-check.</td></tr>
 <tr><td><tt>timeout</tt></td><td>Per-resolver deadline (the CLI --timeout value).</td></tr>
 </table>
+
+<hr>
+<a name="CheckHostsOverride"></a>
+<font color="#859900"><h2>CheckHostsOverride</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func CheckHostsOverride(domain string) (ip string, ok bool)</pre></td></tr></table>
+<p>Reports a hardcoded static mapping for <tt>domain</tt> in the OS hosts
+database (<tt>/etc/hosts</tt> on unix,
+<tt>C:\Windows\System32\drivers\etc\hosts</tt> on Windows — see
+<tt>HostsPath</tt>). Such a mapping short-circuits every resolver, so no
+cross-check can see it; it is probed once in pre-flight alongside the
+resolver queries. Fail-open: unreadable or missing files simply report no
+hit, never an error.</p>
+
+<hr>
+<a name="ParseHostsFile"></a>
+<font color="#859900"><h2>ParseHostsFile</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func ParseHostsFile(content, domain string) (string, bool)</pre></td></tr></table>
+<p>Pure scanner behind <tt>CheckHostsOverride</tt>: ignores comment lines
+and inline comments, matches hostnames case-insensitively (trailing-dot
+tolerant), first mapping wins (OS resolver precedence). Safe to unit
+test.</p>
+
+<hr>
+<a name="LookupASN"></a>
+<font color="#859900"><h2>LookupASN</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func LookupASN(ctx context.Context, ip net.IP, timeout time.Duration) (ASNInfo, bool)</pre></td></tr></table>
+<p>Attributes <tt>ip</tt> to its origin autonomous system via Team
+Cymru's DNS service (<tt>&lt;reversed-octets&gt;.origin.asn.cymru.com</tt>
+TXT), queried through the pinned 1.1.1.1 resolver — never the system
+resolver, so a poisoned local resolver cannot attest to its own
+redirection. IPv4 only (IPv6 reports not-ok). Fail-open: unanswered or
+unparsable queries yield not-ok. Result type:</p>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>type ASNInfo struct {
+    ASN    string // origin AS number, e.g. "15169"
+    Prefix string // announced prefix, e.g. "8.8.8.0/24"
+    CC     string // registrant country code, e.g. "US"
+}</pre></td></tr></table>
+
+<hr>
+<a name="ParseCymruTXT"></a>
+<font color="#859900"><h2>ParseCymruTXT</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func ParseCymruTXT(txt string) (ASNInfo, bool)</pre></td></tr></table>
+<p>Pure parser for one Cymru origin answer
+(<tt>"15169 | 8.8.8.0/24 | US | arin | 1992-12-01"</tt>). Companion
+helpers: <tt>ASNQueryName</tt> builds the query name (false for IPv6),
+<tt>ASNMatch</tt> reports a shared origin AS (unknown sides never
+match).</p>
+
+<hr>
+<a name="CheckSPFAuthority"></a>
+<font color="#859900"><h2>CheckSPFAuthority</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func CheckSPFAuthority(ctx context.Context, target string, suspectIP net.IP, timeout time.Duration) (SPFResult, bool)</pre></td></tr></table>
+<p>Evaluates the target's <tt>v=spf1</tt> record for the suspect's IP (RFC
+7208 mechanism subset: <tt>ip4</tt>/<tt>ip6</tt> CIDRs, <tt>a</tt>,
+<tt>mx</tt>, recursive <tt>include:</tt>, <tt>redirect=</tt>; only a
+<tt>+</tt>-qualifier match authorizes). Recursive includes share the RFC
+10-lookup budget; macro mechanisms, multiple <tt>v=spf1</tt> records, and
+lookup errors all fail open (not-ok). Result type:</p>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>type SPFResult struct {
+    Authorized bool   // the IP is covered by a pass-qualifier mechanism
+    Cover      string // the covering mechanism, e.g. "include:_spf.google.com"
+}</pre></td></tr></table>
+
+<hr>
+<a name="CheckDMARC"></a>
+<font color="#859900"><h2>CheckDMARC</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func CheckDMARC(ctx context.Context, target string, timeout time.Duration) (string, bool)</pre></td></tr></table>
+<p>Reads the target's DMARC enforcement policy (<tt>none</tt>,
+<tt>quarantine</tt>, <tt>reject</tt>) from
+<tt>_dmarc.&lt;target&gt;</tt> TXT through the pinned resolver.
+Display-only context (a <tt>p=reject</tt> target tolerates no
+unauthorized senders); fail-open on any problem.</p>
 <hr>
 <font color="#b58900">Licensed under the GNU General Public License v3 - Mark Robillard Jr (MARKMENTAL)</font>
 </body>

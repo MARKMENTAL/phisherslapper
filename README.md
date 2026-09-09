@@ -240,6 +240,7 @@ VERDICT: UNRELATED — NO AUTHORITY OVER TARGET
 | Rogue ASN: per-path AS split (suspect)      | +30    |
 | Hosts-file override (suspect)               | +50    |
 | Rogue signals target-side/inconclusive (info) | +0   |
+| Chronology inversion: suspect far older than young target (info) | +0 |
 
 | Score | Verdict                                |
 |-------|----------------------------------------|
@@ -261,6 +262,12 @@ identity. Scenario A (likely): deliberately built malicious infrastructure
 impossible for a real business): incompetence so severe no legitimate
 operator this broken survives long enough to do business with you. Either
 way, do not trust the domain.
+
+A suspect far older than a very young target (under 90 days vs over a
+year) trips a display-only `CHRONOLOGY` finding instead of points: a
+days-old "brand" has nothing to protect, so the pair was likely fed
+backwards and the "target" is the imposter. Re-run with the established
+brand as the target.
 
 Lookups fail closed: if RDAP dates or TLS data cannot be retrieved for
 either domain, the tool errors out instead of printing a verdict built on

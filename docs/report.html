@@ -18,6 +18,7 @@
     Score         int
     Findings      []string
     Verdict       string
+    Relationship  string
     AgeFlag       string
     TargetCert    *cert.Details
     SuspectCert   *cert.Details
@@ -41,7 +42,8 @@ RDAP results backing verbose output.</p>
 <font color="#859900"><h2>Human</h2></font>
 <table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func Human(d Data) string</pre></td></tr></table>
 <p>Triage report with per-domain blocks (creation date, registrar, issuer,
-validation, SANs), the scored risk analysis, and the verdict. Empty
+validation, SANs), the pair relationship line, the scored risk analysis,
+and the verdict. Empty
 findings render a clean bill of health.</p>
 
 <hr>
@@ -50,7 +52,10 @@ findings render a clean bill of health.</p>
 <table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func JSON(d Data) string</pre></td></tr></table>
 <p>Machine-readable summary with <tt>tool</tt>, <tt>version</tt>,
 <tt>target</tt>, <tt>suspect</tt> (including suspect <tt>age_days</tt>),
-<tt>risk_score</tt>, <tt>findings</tt>, and <tt>verdict</tt>. Ends with a
+<tt>risk_score</tt>, <tt>findings</tt>, <tt>verdict</tt>,
+<tt>relationship</tt>, <tt>suspect_spf</tt> (<tt>checked</tt>,
+<tt>authorized</tt>, <tt>cover</tt>), <tt>target_dmarc</tt>, and per-path
+<tt>target_paths</tt> / <tt>suspect_paths</tt> objects. Ends with a
 newline for pipeline use.</p>
 
 <hr>
@@ -58,7 +63,9 @@ newline for pipeline use.</p>
 <font color="#859900"><h2>Verbose</h2></font>
 <table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func Verbose(d Data) string</pre></td></tr></table>
 <p>Raw policy OIDs with classes, per-domain TLS details (issuer, subject,
-validity, SANs), and raw RDAP JSON for both domains. Missing data renders
+validity, SANs), raw RDAP JSON for both domains, DNS consistency verdicts,
+and the Resolution paths section (per-path endpoints, per-path TLS
+agreement, origin-AS status, hosts-override state). Missing data renders
 an explicit unavailable notice per section.</p>
 <hr>
 <font color="#b58900">Licensed under the GNU General Public License v3 - Mark Robillard Jr (MARKMENTAL)</font>

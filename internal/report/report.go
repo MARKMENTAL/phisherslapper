@@ -60,6 +60,8 @@ Signals:
   | Rogue ASN: per-path AS split (suspect)        |  +30   |
   | Hosts-file override (suspect)                 |  +50   |
   | Rogue signals target-side/inconclusive (info) |   +0   |
+  | Chronology inversion: suspect far older than |   +0   |
+  | young target (info; likely swapped arguments) |        |
   +-----------------------------------------------+--------+
 
 Verdicts (* = unrelated pair: no shared SANs, SPF coverage, or label

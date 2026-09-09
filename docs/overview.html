@@ -94,6 +94,7 @@ where possible, otherwise use <tt>-k/--insecure</tt> as a last resort.</p>
 <tr><td>Rogue ASN: per-path AS split (suspect)</td><td>+30</td></tr>
 <tr><td>Hosts-file override (suspect)</td><td>+50</td></tr>
 <tr><td>Rogue signals target-side/inconclusive (info)</td><td>+0</td></tr>
+<tr><td>Chronology inversion: suspect far older than young target (info)</td><td>+0</td></tr>
 </table>
 <br>
 <table border="1" cellpadding="4">
@@ -120,8 +121,8 @@ states.</p>
 
 <font color="#859900"><h2>Packages</h2></font>
 <ul>
-<li><a href="dns.html"><b>dns</b></a> - normalization, syntax checks, DNS pre-flight.</li>
-<li><a href="cert.html"><b>cert</b></a> - TLS leaf fetch and validation-level classification.</li>
+<li><a href="dns.html"><b>dns</b></a> - normalization, syntax checks, DNS pre-flight, hosts overrides, origin-AS attribution, SPF/DMARC sender authority.</li>
+<li><a href="cert.html"><b>cert</b></a> - TLS leaf fetch, validation-level classification, per-path identity comparison.</li>
 <li><a href="rdap.html"><b>rdap</b></a> - RDAP client, creation date and registrar extraction.</li>
 <li><a href="score.html"><b>score</b></a> - risk scoring and verdict mapping.</li>
 <li><a href="report.html"><b>report</b></a> - human, JSON, scale, and verbose renderers.</li>

@@ -144,6 +144,14 @@ func Score(target, suspect DomainData) Result {
 		}
 	}
 
+	// Chronology inversion: a suspect far older than a very young target
+	// hints the pair was fed backwards — a days-old "brand" has nothing
+	// to protect. Display-only: an old suspect is exonerating, never
+	// scored.
+	if chronologyInversion(target, suspect) {
+		r.Findings = append(r.Findings, fmt.Sprintf("CHRONOLOGY: Suspect %s (%s old) is far older than target %s (%s old) — chronological inversion: the 'target' is likely the imposter; re-run with the established brand as the target.", suspect.Domain, ageSpan(suspect.AgeDays), target.Domain, ageSpan(target.AgeDays)))
+	}
+
 	if isDowngrade {
 		r.Score += 40
 		r.Findings = append(r.Findings, fmt.Sprintf("DOWNGRADE: Target uses %s (%s) while Suspect uses DV automated cert (%s).", target.Class, target.Issuer, suspect.Issuer))
@@ -351,6 +359,24 @@ func levenshtein(a, b string) int {
 		prev = cur
 	}
 	return prev[len(br)]
+}
+
+// chronologyInversion flags a suspect far older than a very young
+// target: the pair was likely fed backwards, since a days-old "brand"
+// has nothing to protect. Thresholds reuse the WARNING tier boundary
+// (<90d is not an established brand) and a one-year floor to keep
+// ordinary age gaps quiet. Pure function.
+func chronologyInversion(target, suspect DomainData) bool {
+	return target.AgeKnown && suspect.AgeKnown &&
+		target.AgeDays < 90 && suspect.AgeDays >= 365
+}
+
+// ageSpan renders an age in days as "N days" or, past a year, "N years".
+func ageSpan(days int) string {
+	if days >= 365 {
+		return fmt.Sprintf("%d years", days/365)
+	}
+	return fmt.Sprintf("%d days", days)
 }
 
 // registrarMismatch reports a case-insensitive registrar difference,
