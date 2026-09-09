@@ -3,7 +3,7 @@
 // it under the terms of the GNU General Public License v3. See LICENSE.
 // SPDX-License-Identifier: GPL-3.0-only
 
-// Command isthislegit compares a known-legitimate domain against a suspect
+// Command phisherslapper compares a known-legitimate domain against a suspect
 // domain using X.509 TLS certificates, RDAP registration data, and DNS
 // resolution to produce a risk score and verdict. Stdlib only, plus
 // golang.org/x/sync/errgroup for the concurrent pipeline.
@@ -13,6 +13,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -20,11 +21,11 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"isthislegit/internal/cert"
-	"isthislegit/internal/dns"
-	"isthislegit/internal/rdap"
-	"isthislegit/internal/report"
-	"isthislegit/internal/score"
+	"phisherslapper/internal/cert"
+	"phisherslapper/internal/dns"
+	"phisherslapper/internal/rdap"
+	"phisherslapper/internal/report"
+	"phisherslapper/internal/score"
 )
 
 const version = "1.01"
@@ -33,11 +34,11 @@ const defaultPerCall = 5 * time.Second
 const globalTimeout = 15 * time.Second
 
 func usage() string {
-	return fmt.Sprintf(`isthislegit? [v%s]
+	return fmt.Sprintf(`phisherslapper [v%s]
 Domain Impersonation & OSINT Triage Tool
 
 Usage:
-  isthislegit [OPTIONS] <legit_domain> <suspect_domain>
+  phisherslapper [OPTIONS] <legit_domain> <suspect_domain>
 
 Options:
   -v, --verbose   Output raw JSON responses from RDAP and full TLS cert details.
@@ -49,19 +50,25 @@ Options:
   -h, --help      Display this usage banner and exit.
 
 Examples:
-  isthislegit jdsoft.com jdsoftcareers.com
-  isthislegit -j example.com suspect-example.com
-  isthislegit --timeout=10s example.com suspect-example.com
+  phisherslapper jdsoft.com jdsoftcareers.com
+  phisherslapper -j example.com suspect-example.com
+  phisherslapper --timeout=10s example.com suspect-example.com
 `, version)
 }
 
 type domainResult struct {
-	info    score.DomainData
-	cert    *cert.Details
-	rdap    *rdap.Result
-	cons    dns.Consistency
-	rdapErr error
-	certErr error
+	info     score.DomainData
+	cert     *cert.Details
+	rdap     *rdap.Result
+	cons     dns.Consistency
+	sysCert  *cert.Details
+	pubCert  *cert.Details
+	sysASN   dns.ASNInfo
+	pubASN   dns.ASNInfo
+	sysASNOK bool
+	pubASNOK bool
+	rdapErr  error
+	certErr  error
 }
 
 func fetchDomain(ctx context.Context, client *http.Client, domain string, now time.Time, perCall time.Duration, dc dns.DomainCheck) domainResult {
@@ -81,6 +88,48 @@ func fetchDomain(ctx context.Context, client *http.Client, domain string, now ti
 		cd, res.certErr = c, err
 		return err
 	})
+	// Rogue-redirection probes: interrogate what each resolution path
+	// serves. Per-path TLS dials the concrete endpoint IP directly (SNI
+	// preserved); ASN attribution goes through the pinned resolver so a
+	// poisoned system resolver cannot attest to its own redirection.
+	var sysIP, pubIP net.IP
+	if len(dc.SystemAddrs) > 0 {
+		sysIP = dc.SystemAddrs[0]
+	}
+	if len(dc.PublicAddrs) > 0 {
+		pubIP = dc.PublicAddrs[0]
+	}
+	if sysIP != nil && pubIP != nil {
+		if sysIP.Equal(pubIP) {
+			// Same endpoint both paths: one dial attests for both.
+			g.Go(func() error {
+				c, _ := cert.InspectAddr(ctx, sysIP, domain, perCall)
+				res.sysCert, res.pubCert = c, c
+				return nil
+			})
+		} else {
+			g.Go(func() error {
+				c, _ := cert.InspectAddr(ctx, sysIP, domain, perCall)
+				res.sysCert = c
+				return nil
+			})
+			g.Go(func() error {
+				c, _ := cert.InspectAddr(ctx, pubIP, domain, perCall)
+				res.pubCert = c
+				return nil
+			})
+		}
+		g.Go(func() error {
+			a, ok := dns.LookupASN(ctx, sysIP, perCall)
+			res.sysASN, res.sysASNOK = a, ok
+			return nil
+		})
+		g.Go(func() error {
+			a, ok := dns.LookupASN(ctx, pubIP, perCall)
+			res.pubASN, res.pubASNOK = a, ok
+			return nil
+		})
+	}
 	// DNS was probed once in pre-flight; reuse those outcomes here so no
 	// resolver is queried twice. Fail-open per field; the root causes are
 	// kept for the fail-closed verdict gate below.
@@ -92,6 +141,31 @@ func fetchDomain(ctx context.Context, client *http.Client, domain string, now ti
 	res.info.DNSTampered = res.cons.Tampered
 	res.info.DNSSplit = res.cons.Kind
 	res.info.DNSDetail = res.cons.Detail
+	res.info.HostsHit = dc.HostsHit
+	res.info.HostsIP = dc.HostsIP
+	if sysIP != nil {
+		res.info.SysIP = sysIP.String()
+	}
+	if pubIP != nil {
+		res.info.PubIP = pubIP.String()
+	}
+	if sysIP != nil && pubIP != nil {
+		res.info.PathChecked = true
+		match, complete, detail := cert.ComparePaths(res.sysCert, res.pubCert)
+		res.info.PathComplete = complete
+		res.info.PathMatch = match
+		res.info.PathDetail = detail
+		if res.sysASNOK {
+			res.info.SysASN = "AS" + res.sysASN.ASN
+			res.info.SysASNNet = asnNet(res.sysASN)
+		}
+		if res.pubASNOK {
+			res.info.PubASN = "AS" + res.pubASN.ASN
+			res.info.PubASNNet = asnNet(res.pubASN)
+		}
+		res.info.ASNChecked = res.sysASNOK && res.pubASNOK
+		res.info.ASNMatch = dns.ASNMatch(res.sysASN, res.pubASN, res.sysASNOK, res.pubASNOK)
+	}
 
 	res.info.Date = rdap.RegistrationDate(rd)
 	res.info.Registrar = rdap.Registrar(rd)
@@ -121,6 +195,14 @@ func fetchDomain(ctx context.Context, client *http.Client, domain string, now ti
 		res.info.AgeKnown = true
 	}
 	return res
+}
+
+// asnNet formats ASN attribution detail for display.
+func asnNet(a dns.ASNInfo) string {
+	if a.Prefix != "" && a.CC != "" {
+		return a.Prefix + ", " + a.CC
+	}
+	return a.Prefix + a.CC
 }
 
 func run() int {

@@ -13,7 +13,7 @@ package score
 import "fmt"
 import "strings"
 
-import "isthislegit/internal/dns"
+import "phisherslapper/internal/dns"
 
 // DomainData holds the collected triage fields for one domain.
 type DomainData struct {
@@ -28,6 +28,22 @@ type DomainData struct {
 	DNSTampered bool          // suppression/NS split (scores on suspect)
 	DNSSplit    dns.SplitKind // split direction (horizon never scores)
 	DNSDetail   string        // human-readable split description
+	// Rogue-redirection path intel: what the system-resolved endpoint
+	// serves versus the public-resolved endpoint.
+	SysIP        string // first system-resolved A record, "" when none
+	PubIP        string // first public-resolved A record, "" when none
+	PathChecked  bool   // both paths resolved to an IP
+	PathComplete bool   // both per-path TLS identities fetched
+	PathMatch    bool   // per-path TLS identities agree
+	PathDetail   string // mismatch description
+	SysASN       string // origin AS via local path, e.g. "AS15169"
+	PubASN       string // origin AS via public path
+	SysASNNet    string // prefix/country detail, e.g. "8.8.8.0/24, US"
+	PubASNNet    string
+	ASNChecked   bool   // both paths attributed
+	ASNMatch     bool   // both paths share an origin AS
+	HostsHit     bool   // static hosts-file mapping exists
+	HostsIP      string // the mapped IP
 }
 
 // Result is the outcome of scoring a target/suspect pair.
@@ -93,6 +109,7 @@ func Score(target, suspect DomainData) Result {
 		if suspect.DNSDetail != target.DNSDetail {
 			noteDNS(&r, suspect, "suspect")
 		}
+		notePathIntel(&r, target, "target")
 		r.Verdict = Verdict(r.Score)
 		return r
 	}
@@ -145,6 +162,29 @@ func Score(target, suspect DomainData) Result {
 	}
 	noteDNS(&r, target, "target")
 
+	// Rogue redirection: local-path vs public-path divergence on the
+	// suspect side. A hosts-file override short-circuits every resolver
+	// (+50, suppression tier); divergent per-path TLS identities prove
+	// the local answer serves a different endpoint (+50); termination
+	// in different autonomous systems corroborates at network level
+	// (+30). Target-side and inconclusive probes stay display-only.
+	if suspect.HostsHit {
+		r.Score += 50
+		r.Findings = append(r.Findings, fmt.Sprintf("HIJACK: Suspect has a hardcoded static mapping in the OS hosts file (%s -> %s); local resolution is overridden before DNS is ever consulted.", suspect.HostsIP, suspect.Domain))
+	}
+	if suspect.PathComplete && !suspect.PathMatch {
+		r.Score += 50
+		r.Findings = append(r.Findings, fmt.Sprintf("REDIRECTION: Suspect serves divergent TLS identities per resolution path (local %s vs public %s): %s.", suspect.SysIP, suspect.PubIP, suspect.PathDetail))
+	}
+	if suspect.PathChecked && !suspect.PathComplete {
+		r.Findings = append(r.Findings, fmt.Sprintf("NOTE: Per-path TLS comparison for suspect inconclusive (local %s vs public %s); one endpoint refused port 443.", suspect.SysIP, suspect.PubIP))
+	}
+	if suspect.ASNChecked && !suspect.ASNMatch {
+		r.Score += 30
+		r.Findings = append(r.Findings, fmt.Sprintf("MISMATCH: Suspect resolution paths terminate in different autonomous systems (local %s %s vs public %s %s).", suspect.SysASN, parenthesize(suspect.SysASNNet), suspect.PubASN, parenthesize(suspect.PubASNNet)))
+	}
+	notePathIntel(&r, target, "target")
+
 	r.Verdict = Verdict(r.Score)
 	return r
 }
@@ -162,6 +202,30 @@ func noteDNS(r *Result, d DomainData, role string) {
 	if d.DNSSplit == dns.SplitHorizon {
 		r.Findings = append(r.Findings, fmt.Sprintf("NOTE: Split-horizon DNS for %s (%s); resolves locally only.", role, d.DNSDetail))
 	}
+}
+
+// notePathIntel appends display-only rogue-redirection findings for one
+// side: hosts overrides, per-path TLS divergence, and ASN splits are
+// observer-side suspicion without points. No points.
+func notePathIntel(r *Result, d DomainData, role string) {
+	if d.HostsHit {
+		r.Findings = append(r.Findings, fmt.Sprintf("NOTE: %s has a static hosts-file mapping (%s -> %s); local resolution is overridden.", role, d.HostsIP, d.Domain))
+	}
+	if d.PathComplete && !d.PathMatch {
+		r.Findings = append(r.Findings, fmt.Sprintf("NOTE: %s serves divergent TLS identities per resolution path (local %s vs public %s): %s.", role, d.SysIP, d.PubIP, d.PathDetail))
+	}
+	if d.ASNChecked && !d.ASNMatch {
+		r.Findings = append(r.Findings, fmt.Sprintf("NOTE: %s resolution paths terminate in different autonomous systems (local %s vs public %s).", role, d.SysASN, d.PubASN))
+	}
+}
+
+// parenthesize wraps non-empty detail for finding text.
+func parenthesize(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	return "(" + s + ")"
 }
 
 // registrarMismatch reports a case-insensitive registrar difference,

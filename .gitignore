@@ -1,5 +1,5 @@
 # Agent spec isn't directly relevant to code
 AGENTS.md
 .clang-format
-# Built Go binary (replaces bash script in place; bash kept as isthislegit.sh)
-/isthislegit*
+# Built Go binary (replaces bash script in place; bash kept as phisherslapper.sh)
+/phisherslapper*

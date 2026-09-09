@@ -65,9 +65,10 @@ const (
 )
 
 type resolverOutcome struct {
-	name string
-	kind outcomeKind
-	ns   []string
+	name  string
+	kind  outcomeKind
+	ns    []string
+	addrs []net.IP
 }
 
 // pinnedResolver dials one DNS server directly, bypassing resolv.conf.
@@ -82,10 +83,18 @@ func pinnedResolver(addr string) *net.Resolver {
 }
 
 // DomainCheck is one domain's full probe: system liveness for gating,
-// public liveness for suppression attribution, and the aggregate verdict.
+// public liveness for suppression attribution, the aggregate verdict, and
+// the per-path addresses backing rogue-redirection analysis. Only the
+// first live A record per side is retained: raw addresses are never
+// compared for scoring (CDN/GeoDNS), they only select which endpoint the
+// per-path TLS and ASN probes interrogate.
 type DomainCheck struct {
 	SystemLive  bool
 	PublicLive  bool
+	SystemAddrs []net.IP
+	PublicAddrs []net.IP
+	HostsHit    bool
+	HostsIP     string
 	Consistency Consistency
 }
 
@@ -111,6 +120,7 @@ func CheckDomain(ctx context.Context, domain string, timeout time.Duration) Doma
 			addrs, err := resolvers[i].LookupIP(callCtx, "ip4", domain)
 			out := resolverOutcome{name: names[i], kind: classifyOutcome(addrs, err)}
 			if out.kind == outcomeLive {
+				out.addrs = append([]net.IP(nil), addrs...)
 				if nss, nsErr := resolvers[i].LookupNS(callCtx, domain); nsErr == nil {
 					for _, ns := range nss {
 						out.ns = append(out.ns, normalizeNS(ns.Host))
@@ -126,13 +136,25 @@ func CheckDomain(ctx context.Context, domain string, timeout time.Duration) Doma
 	for _, o := range outcomes {
 		if o.name == "system" && o.kind == outcomeLive {
 			dc.SystemLive = true
+			dc.SystemAddrs = append([]net.IP(nil), o.addrs...)
 		}
 		if o.name != "system" && o.kind == outcomeLive {
 			dc.PublicLive = true
+			// First live public resolver wins (1.1.1.1 order): the
+			// per-path probes need one representative public endpoint.
+			if len(dc.PublicAddrs) == 0 {
+				dc.PublicAddrs = append([]net.IP(nil), o.addrs...)
+			}
 		}
 	}
 	kind, detail := detectSplit(domain, outcomes)
 	dc.Consistency = Consistency{Checked: true, Tampered: kind == SplitSuppression || kind == SplitNS, Kind: kind, Detail: detail}
+	// Static hosts-file override short-circuits every resolver, so it is
+	// checked here in pre-flight alongside the resolver probes.
+	if ip, ok := CheckHostsOverride(domain); ok {
+		dc.HostsHit = true
+		dc.HostsIP = ip
+	}
 	return dc
 }
 

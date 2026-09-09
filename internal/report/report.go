@@ -13,9 +13,9 @@ import (
 	"fmt"
 	"strings"
 
-	"isthislegit/internal/cert"
-	"isthislegit/internal/rdap"
-	"isthislegit/internal/score"
+	"phisherslapper/internal/cert"
+	"phisherslapper/internal/rdap"
+	"phisherslapper/internal/score"
 )
 
 // Data bundles everything needed to render a triage result.
@@ -37,7 +37,7 @@ type Data struct {
 
 // Scale prints the scoring reference table (no lookups performed).
 func Scale(version string) string {
-	return fmt.Sprintf(`isthislegit? [v%s] — Scoring Scale (max total: 200)
+	return fmt.Sprintf(`phisherslapper [v%s] — Scoring Scale (max total: 330)
 
 Signals:
   +-----------------------------------------------+--------+
@@ -55,6 +55,10 @@ Signals:
   | Registrar mismatch                            |  +30   |
   | Same-class issuer difference (display only)   |   +0   |
   | Unknown registrar (best-effort field)         |   +0   |
+  | Rogue TLS: per-path cert divergence (suspect) |  +50   |
+  | Rogue ASN: per-path AS split (suspect)        |  +30   |
+  | Hosts-file override (suspect)                 |  +50   |
+  | Rogue signals target-side/inconclusive (info) |   +0   |
   +-----------------------------------------------+--------+
 
 Verdicts:
@@ -72,7 +76,7 @@ Verdicts:
 // Human renders the triage report.
 func Human(d Data) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "isthislegit? [v%s]\n", d.Version)
+	fmt.Fprintf(&b, "phisherslapper [v%s]\n", d.Version)
 	b.WriteString("Domain Impersonation & OSINT Triage Tool\n\n")
 	fmt.Fprintf(&b, "[*] Comparing: %s (Target) <---> %s (Suspect)\n\n", d.TargetDomain, d.SuspectDomain)
 	fmt.Fprintf(&b, "[+] Target Domain: %s\n", d.TargetDomain)
@@ -118,13 +122,37 @@ func JSON(d Data) string {
 		CertSANs     string `json:"cert_sans"`
 		AgeDays      *int   `json:"age_days"`
 	}
+	type paths struct {
+		SystemIP     string `json:"system_ip"`
+		PublicIP     string `json:"public_ip"`
+		CertChecked  bool   `json:"per_path_tls_checked"`
+		CertComplete bool   `json:"per_path_tls_complete"`
+		CertMatch    bool   `json:"per_path_tls_match"`
+		CertDetail   string `json:"per_path_tls_detail"`
+		SystemASN    string `json:"system_asn"`
+		PublicASN    string `json:"public_asn"`
+		ASNChecked   bool   `json:"asn_checked"`
+		ASNMatch     bool   `json:"asn_match"`
+		HostsHit     bool   `json:"hosts_override"`
+		HostsIP      string `json:"hosts_ip"`
+	}
+	pathOf := func(dd score.DomainData) paths {
+		return paths{
+			SystemIP: dd.SysIP, PublicIP: dd.PubIP,
+			CertChecked: dd.PathChecked, CertComplete: dd.PathComplete,
+			CertMatch: dd.PathMatch, CertDetail: dd.PathDetail,
+			SystemASN: dd.SysASN, PublicASN: dd.PubASN,
+			ASNChecked: dd.ASNChecked, ASNMatch: dd.ASNMatch,
+			HostsHit: dd.HostsHit, HostsIP: dd.HostsIP,
+		}
+	}
 	var suspectAge *int
 	if d.Suspect.AgeKnown {
 		v := d.Suspect.AgeDays
 		suspectAge = &v
 	}
 	out := map[string]any{
-		"tool":    "isthislegit",
+		"tool":    "phisherslapper",
 		"version": d.Version,
 		"target": side{
 			Domain: d.TargetDomain, CreationDate: d.Target.Date,
@@ -137,9 +165,11 @@ func JSON(d Data) string {
 			"cert_class": d.Suspect.Class, "cert_sans": d.Suspect.SANs,
 			"age_days": suspectAge,
 		},
-		"risk_score": d.Score,
-		"findings":   d.Findings,
-		"verdict":    d.Verdict,
+		"risk_score":    d.Score,
+		"findings":      d.Findings,
+		"verdict":       d.Verdict,
+		"target_paths":  pathOf(d.Target),
+		"suspect_paths": pathOf(d.Suspect),
 	}
 	if out["findings"] == nil {
 		out["findings"] = []string{}
@@ -213,6 +243,8 @@ func Verbose(d Data) string {
 	writeRDAP(d.SuspectDomain, d.SuspectRDAP)
 	writeDNS(&b, "Target", d.TargetDomain, d.Target.DNSTampered, d.Target.DNSDetail)
 	writeDNS(&b, "Suspect", d.SuspectDomain, d.Suspect.DNSTampered, d.Suspect.DNSDetail)
+	writePaths(&b, "Target", d.TargetDomain, d.Target)
+	writePaths(&b, "Suspect", d.SuspectDomain, d.Suspect)
 	return b.String()
 }
 
@@ -228,6 +260,54 @@ func writeDNS(b *strings.Builder, label, domain string, tampered bool, detail st
 		status = "TAMPERED: " + detail
 	}
 	fmt.Fprintf(b, "  %s\n\n", status)
+}
+
+// writePaths renders the rogue-redirection path intel for one domain:
+// per-path endpoints, per-path TLS agreement, ASN attribution, and the
+// hosts-file override state.
+func writePaths(b *strings.Builder, label, domain string, d score.DomainData) {
+	fmt.Fprintf(b, "--- Resolution paths (%s):\n", domain)
+	if !d.PathChecked && !d.HostsHit {
+		fmt.Fprintf(b, "  no per-path divergence probed (%s)\n\n", label)
+		return
+	}
+	sysIP, pubIP := d.SysIP, d.PubIP
+	if sysIP == "" {
+		sysIP = "—"
+	}
+	if pubIP == "" {
+		pubIP = "—"
+	}
+	fmt.Fprintf(b, "  local endpoint: %s | public endpoint: %s\n", sysIP, pubIP)
+	switch {
+	case d.PathComplete && d.PathMatch:
+		b.WriteString("  per-path TLS: identities agree\n")
+	case d.PathComplete:
+		fmt.Fprintf(b, "  per-path TLS: DIVERGENT (%s)\n", d.PathDetail)
+	case d.PathChecked:
+		b.WriteString("  per-path TLS: inconclusive (one endpoint refused port 443)\n")
+	}
+	if d.ASNChecked {
+		status := "agree"
+		if !d.ASNMatch {
+			status = "SPLIT"
+		}
+		fmt.Fprintf(b, "  origin AS: local %s vs public %s [%s]\n", asnOrUnknown(d.SysASN), asnOrUnknown(d.PubASN), status)
+	} else {
+		b.WriteString("  origin AS: unattributed (Team Cymru query unanswered)\n")
+	}
+	if d.HostsHit {
+		fmt.Fprintf(b, "  hosts override: STATIC MAPPING %s -> %s\n\n", d.HostsIP, domain)
+	} else {
+		b.WriteString("  hosts override: none\n\n")
+	}
+}
+
+func asnOrUnknown(s string) string {
+	if s == "" {
+		return "unknown"
+	}
+	return s
 }
 
 func classOf(c *cert.Details) string {

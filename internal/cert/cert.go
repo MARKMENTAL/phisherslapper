@@ -10,10 +10,12 @@ package cert
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
 	"net"
+	"sort"
 	"strings"
 	"time"
 )
@@ -28,15 +30,16 @@ const (
 
 // Details holds the extracted leaf certificate fields.
 type Details struct {
-	Issuer    string   // Organization or fallback issuer string, "Unknown" on failure
-	Class     string   // EV, OV, IV, DV, or Unknown
-	SANs      []string // DNS SANs (CN fallback), empty when unavailable
-	OIDs      []string // raw policy OIDs found
-	Subject   string
-	IssuerStr string
-	NotBefore time.Time
-	NotAfter  time.Time
-	HasCert   bool
+	Issuer      string   // Organization or fallback issuer string, "Unknown" on failure
+	Class       string   // EV, OV, IV, DV, or Unknown
+	SANs        []string // DNS SANs (CN fallback), empty when unavailable
+	OIDs        []string // raw policy OIDs found
+	Subject     string
+	IssuerStr   string
+	Fingerprint string // SHA-256 of the raw leaf, hex-encoded
+	NotBefore   time.Time
+	NotAfter    time.Time
+	HasCert     bool
 }
 
 // oidClassPriority maps policy OIDs to validation classes in priority
@@ -90,6 +93,35 @@ func InspectDomain(ctx context.Context, domain string, perCall time.Duration) (*
 }
 
 func inspectOnce(ctx context.Context, domain string, perCall time.Duration) (*Details, error) {
+	return dialOnce(ctx, net.JoinHostPort(domain, "443"), domain, perCall)
+}
+
+// InspectAddr dials ip:443 directly (bypassing the system resolver) while
+// still presenting domain as SNI, capturing the TLS identity served at
+// that specific resolution-path endpoint. Used to compare what the local
+// resolver's answer serves versus what the public resolvers' answer
+// serves. Same retry posture as InspectDomain.
+func InspectAddr(ctx context.Context, ip net.IP, domain string, perCall time.Duration) (*Details, error) {
+	const maxAttempts = 3
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		d, err := dialOnce(ctx, net.JoinHostPort(ip.String(), "443"), domain, perCall)
+		if err == nil {
+			return d, nil
+		}
+		lastErr = err
+		if attempt < maxAttempts {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Second):
+			}
+		}
+	}
+	return nil, lastErr
+}
+
+func dialOnce(ctx context.Context, addr, serverName string, perCall time.Duration) (*Details, error) {
 	callCtx, cancel := context.WithTimeout(ctx, perCall)
 	defer cancel()
 
@@ -97,22 +129,22 @@ func inspectOnce(ctx context.Context, domain string, perCall time.Duration) (*De
 		NetDialer: &net.Dialer{Timeout: perCall},
 		Config: &tls.Config{
 			InsecureSkipVerify: true,
-			ServerName:         domain,
+			ServerName:         serverName,
 		},
 	}
-	conn, err := dialer.DialContext(callCtx, "tcp", net.JoinHostPort(domain, "443"))
+	conn, err := dialer.DialContext(callCtx, "tcp", addr)
 	if err != nil {
-		return nil, fmt.Errorf("TLS dial %s: %w", domain, err)
+		return nil, fmt.Errorf("TLS dial %s: %w", addr, err)
 	}
 	defer conn.Close()
 
 	cs, ok := conn.(*tls.Conn)
 	if !ok {
-		return nil, fmt.Errorf("TLS dial %s: unexpected conn type", domain)
+		return nil, fmt.Errorf("TLS dial %s: unexpected conn type", addr)
 	}
 	state := cs.ConnectionState()
 	if len(state.PeerCertificates) == 0 {
-		return nil, fmt.Errorf("TLS dial %s: no peer certificates", domain)
+		return nil, fmt.Errorf("TLS dial %s: no peer certificates", addr)
 	}
 	return FromLeaf(state.PeerCertificates[0]), nil
 }
@@ -122,6 +154,7 @@ func FromLeaf(leaf *x509.Certificate) *Details {
 	d := &Details{HasCert: true}
 	d.Subject = leaf.Subject.String()
 	d.IssuerStr = leaf.Issuer.String()
+	d.Fingerprint = fmt.Sprintf("%x", sha256.Sum256(leaf.Raw))
 	d.NotBefore = leaf.NotBefore
 	d.NotAfter = leaf.NotAfter
 
@@ -163,4 +196,63 @@ func (d *Details) SANsString() string {
 		return "Unknown"
 	}
 	return strings.Join(d.SANs, ", ")
+}
+
+// ComparePaths compares the TLS identities served at the system-resolved
+// endpoint versus the public-resolved endpoint for one domain. It reports
+// whether both endpoints were interrogated (complete), whether the
+// identities agree (match), and a human-readable mismatch description.
+// Pure function; safe to unit test. Missing certs fail open: incomplete,
+// never a mismatch.
+func ComparePaths(sys, pub *Details) (match, complete bool, detail string) {
+	if sys == nil || pub == nil || !sys.HasCert || !pub.HasCert {
+		return false, false, ""
+	}
+	var diffs []string
+	if sys.Issuer != pub.Issuer {
+		diffs = append(diffs, fmt.Sprintf("issuer %q vs %q", sys.Issuer, pub.Issuer))
+	}
+	if sys.Class != pub.Class {
+		diffs = append(diffs, fmt.Sprintf("validation %s vs %s", sys.Class, pub.Class))
+	}
+	if !sansEqual(sys.SANs, pub.SANs) {
+		diffs = append(diffs, fmt.Sprintf("SANs {%s} vs {%s}", sys.SANsString(), pub.SANsString()))
+	}
+	if sys.Fingerprint != "" && pub.Fingerprint != "" && sys.Fingerprint != pub.Fingerprint {
+		diffs = append(diffs, fmt.Sprintf("leaf fingerprint %s vs %s", shortFP(sys.Fingerprint), shortFP(pub.Fingerprint)))
+	}
+	if len(diffs) == 0 {
+		return true, true, ""
+	}
+	return false, true, strings.Join(diffs, "; ")
+}
+
+// sansEqual compares SAN sets ignoring order and case.
+func sansEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	norm := func(s []string) []string {
+		out := make([]string, len(s))
+		for i, v := range s {
+			out[i] = strings.ToLower(strings.TrimSpace(v))
+		}
+		sort.Strings(out)
+		return out
+	}
+	na, nb := norm(a), norm(b)
+	for i := range na {
+		if na[i] != nb[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// shortFP truncates a fingerprint for display.
+func shortFP(fp string) string {
+	if len(fp) > 16 {
+		return fp[:16] + "…"
+	}
+	return fp
 }

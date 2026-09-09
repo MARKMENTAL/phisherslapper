@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"isthislegit/internal/dns"
+	"phisherslapper/internal/dns"
 )
 
 func TestScorePhishing(t *testing.T) {

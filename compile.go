@@ -3,8 +3,8 @@
 // it under the terms of the GNU General Public License v3. See LICENSE.
 // SPDX-License-Identifier: GPL-3.0-only
 
-// Command compile is the build driver for isthislegit. It cross-compiles
-// ./cmd/isthislegit for the requested platform/arch matrix:
+// Command compile is the build driver for phisherslapper. It cross-compiles
+// ./cmd/phisherslapper for the requested platform/arch matrix:
 //
 //	go run ./compile.go --platform=linux --arch=amd64 --static=true
 //
@@ -104,7 +104,7 @@ func supportedPairs() (map[string]bool, error) {
 }
 
 func outputName(t target) string {
-	name := fmt.Sprintf("isthislegit-%s-%s", t.goos, t.goarch)
+	name := fmt.Sprintf("phisherslapper-%s-%s", t.goos, t.goarch)
 	if t.goarm != "" {
 		name += "v" + t.goarm
 	}
@@ -141,7 +141,7 @@ func build(t target, cgo bool) error {
 	if cgo {
 		cgoEnabled = "1"
 	}
-	args = append(args, "-o", outputName(t), "./cmd/isthislegit")
+	args = append(args, "-o", outputName(t), "./cmd/phisherslapper")
 
 	cmd := exec.Command("go", args...)
 	cmd.Env = append(os.Environ(),

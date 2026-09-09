@@ -1,10 +1,10 @@
 <!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
 <html>
 <head>
-<title>isthislegit Developer Docs - Overview</title>
+<title>phisherslapper Developer Docs - Overview</title>
 </head>
 <body bgcolor="#002b36" text="#a3b8b9" link="#859900" vlink="#b58900">
-<font color="#b58900"><h1>isthislegit? [v1.01]</h1></font>
+<font color="#b58900"><h1>phisherslapper [v1.01]</h1></font>
 <p>Domain Impersonation and OSINT Triage Tool. Compares a known-legitimate
 domain (target) against a suspect domain using DNS resolution, X.509 TLS
 certificates, and RDAP registration data, then produces a deterministic risk
@@ -12,10 +12,10 @@ score and verdict. Single static binary; standard library plus
 <tt>golang.org/x/sync</tt> only.</p>
 
 <font color="#859900"><h2>Build and Run</h2></font>
-<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>git clone https://github.com/MARKMENTAL/isthislegit.git
-cd isthislegit
-CGO_ENABLED=0 go build -ldflags="-s -w" -o isthislegit ./cmd/isthislegit
-./isthislegit jdsoft.com jdsoftcareers.com
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>git clone https://github.com/MARKMENTAL/phisherslapper.git
+cd phisherslapper
+CGO_ENABLED=0 go build -ldflags="-s -w" -o phisherslapper ./cmd/phisherslapper
+./phisherslapper jdsoft.com jdsoftcareers.com
 go test ./...</pre></td></tr></table>
 
 <font color="#859900"><h2>Flags</h2></font>
@@ -36,10 +36,10 @@ DNS, TLS, and RDAP call carries a 5 second deadline (adjustable with
 <tt>--timeout</tt>) and is retried up to 3 times. Total run time equals the
 slower of the two domains. Fail-closed errors name the underlying
 cause(s).</p>
-<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>parse args --&gt; DNS pre-flight (target + suspect, parallel)
-           --&gt; fetch target   = RDAP + TLS in parallel
-           --&gt; fetch suspect  = RDAP + TLS in parallel
-           --&gt; fail-closed verify --&gt; score --&gt; render</pre></td></tr></table>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>parse args --&gt; DNS pre-flight (target + suspect, parallel; keeps per-path IPs, checks hosts file)
+            --&gt; fetch target   = RDAP + TLS + per-path TLS + ASN in parallel
+            --&gt; fetch suspect  = RDAP + TLS + per-path TLS + ASN in parallel
+            --&gt; fail-closed verify --&gt; score --&gt; render</pre></td></tr></table>
 <p>Exit codes: <tt>0</tt> on success (including <tt>--scale</tt> and
 <tt>--help</tt>), <tt>1</tt> on bad flags, invalid domains, DNS failure, or
 failed data-quality verification.</p>
@@ -53,6 +53,18 @@ system-live/public-dark split-horizon shapes and target-side splits stay
 display-only NOTEs. CDN/GeoDNS address churn stays quiet. Inconclusive
 resolvers abstain; filtered resolvers are excluded by design. The
 pre-flight gate aborts on system failure with hijack-aware messaging.</p>
+
+<font color="#859900"><h2>Rogue Redirection</h2></font>
+<p>Beyond state comparison, the first live A record per side is retained and
+each endpoint is interrogated: the TLS identity served at the
+system-resolved IP is compared against the public-resolved IP (issuer,
+validation class, SANs, leaf fingerprint; SNI preserved). Origin
+autonomous systems for both IPs are attributed via Team Cymru
+(<tt>origin.asn.cymru.com</tt> TXT through the pinned resolver), and the OS
+hosts file is checked for static overrides. Divergent per-path TLS (+50),
+split origin AS (+30), and hosts-file overrides (+50) score on the suspect;
+target-side and inconclusive probes stay display-only. Raw addresses are
+never compared, so CDN/GeoDNS fronting stays quiet. Max total is 330.</p>
 
 <font color="#859900"><h2>Embedded Systems</h2></font>
 <p>The tool runs on embedded ARM devices (verified on a Miyoo Mini Plus),
@@ -76,6 +88,10 @@ where possible, otherwise use <tt>-k/--insecure</tt> as a last resort.</p>
 <tr><td>Cert downgrade: target EV/OV vs suspect DV</td><td>+40</td></tr>
 <tr><td>Registrar mismatch</td><td>+30</td></tr>
 <tr><td>Same-class issuer difference (display only)</td><td>+0</td></tr>
+<tr><td>Rogue TLS: per-path cert divergence (suspect)</td><td>+50</td></tr>
+<tr><td>Rogue ASN: per-path AS split (suspect)</td><td>+30</td></tr>
+<tr><td>Hosts-file override (suspect)</td><td>+50</td></tr>
+<tr><td>Rogue signals target-side/inconclusive (info)</td><td>+0</td></tr>
 </table>
 <br>
 <table border="1" cellpadding="4">

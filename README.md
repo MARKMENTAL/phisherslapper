@@ -1,8 +1,8 @@
-# isthislegit? [v1.01]
+# phisherslapper [v1.01]
 
 Domain Impersonation & OSINT Triage Tool.
 
-`isthislegit` compares a known-legitimate domain (target) against a suspect
+`phisherslapper` compares a known-legitimate domain (target) against a suspect
 domain using DNS resolution, X.509 TLS certificates, and RDAP registration
 data to produce a deterministic risk score and verdict. DNS answers are
 cross-checked across the system resolver, 1.1.1.1, and 8.8.8.8 for
@@ -19,6 +19,9 @@ required.
 ## Features
 
 - **DNS pre-flight** — NXDOMAIN / unresolvable domains abort early.
+- **Rogue-redirection probes** — per-path TLS identity comparison (local
+  vs public endpoint), origin-AS attribution via Team Cymru, and a
+  hosts-file override check.
 - **X.509 classification** — leaf certificate issuer, SANs, and validation
   level (EV / OV / IV / DV) from CA/Browser Forum policy OIDs.
 - **RDAP triage** — creation date and registrar via `https://rdap.org/domain/`.
@@ -29,15 +32,17 @@ required.
 ## Prerequisites
 
 - Go 1.24 or newer.
-- Network access to DNS, remote port 443, and `rdap.org`.
+- Network access to DNS, remote port 443, and `rdap.org`. Origin-AS
+  attribution queries `origin.asn.cymru.com` (Team Cymru) through
+  1.1.1.1; if that zone is unreachable the ASN signal fails open.
 
 ## Clone, build, run
 
 ```bash
-git clone https://github.com/MARKMENTAL/isthislegit.git
-cd isthislegit
-CGO_ENABLED=0 go build -ldflags="-s -w" -o isthislegit ./cmd/isthislegit
-./isthislegit jdsoft.com jdsoftcareers.com
+git clone https://github.com/MARKMENTAL/phisherslapper.git
+cd phisherslapper
+CGO_ENABLED=0 go build -ldflags="-s -w" -o phisherslapper ./cmd/phisherslapper
+./phisherslapper jdsoft.com jdsoftcareers.com
 ```
 
 Run the test suite with:
@@ -49,7 +54,7 @@ go test ./...
 ### Cross-compiling with compile.go
 
 `compile.go` (repo root) is the supported build driver. It cross-compiles
-`./cmd/isthislegit` for a platform/arch matrix, always with
+`./cmd/phisherslapper` for a platform/arch matrix, always with
 `CGO_ENABLED=0`, so every target builds without a cross C toolchain:
 
 ```bash
@@ -72,8 +77,8 @@ Arch vocabulary: raw `GOARCH` names plus aliases — `x64`/`x86-64` → `amd64`;
 toolchain does not support (e.g. `darwin/386`) are refused with a clear
 error.
 
-Output binaries are named `isthislegit-<goos>-<goarch>` (with a `vGOARM`
-suffix when applicable, e.g. `isthislegit-linux-armv7`, and `.exe` on
+Output binaries are named `phisherslapper-<goos>-<goarch>` (with a `vGOARM`
+suffix when applicable, e.g. `phisherslapper-linux-armv7`, and `.exe` on
 Windows):
 
 ```bash
@@ -97,15 +102,15 @@ go run ./compile.go --platform=linux --arch=armv7   # embedded ARM (Miyoo Mini P
 Examples:
 
 ```bash
-isthislegit jdsoft.com jdsoftcareers.com
-isthislegit -j example.com suspect-example.com
-isthislegit --timeout=10s example.com suspect-example.com
-isthislegit --scale
+phisherslapper jdsoft.com jdsoftcareers.com
+phisherslapper -j example.com suspect-example.com
+phisherslapper --timeout=10s example.com suspect-example.com
+phisherslapper --scale
 ```
 
 ### Embedded systems (no CA certificates)
 
-`isthislegit` runs on embedded ARM devices (verified on a Miyoo Mini Plus),
+`phisherslapper` runs on embedded ARM devices (verified on a Miyoo Mini Plus),
 but minimal firmware images often ship without a CA certificate store. In
 that case DNS resolution and certificate inspection still work, while
 verified HTTPS (RDAP) fails — the fail-closed error will say so directly
@@ -114,7 +119,7 @@ verified HTTPS (RDAP) fails — the fail-closed error will say so directly
 insecure mode:
 
 ```bash
-isthislegit -k jdsoft.com jdsoftcareers.com
+phisherslapper -k jdsoft.com jdsoftcareers.com
 ```
 
 `--insecure` prints a warning and weakens results, so treat it as a last
@@ -123,7 +128,7 @@ resort for devices without stored CA certificates.
 ## Example output
 
 ```text
-isthislegit? [v1.01]
+phisherslapper [v1.01]
 Domain Impersonation & OSINT Triage Tool
 
 [*] Comparing: example.com (Target) <---> example.org (Suspect)
@@ -164,6 +169,10 @@ VERDICT: LIKELY UNRELATED / MISCONFIGURED
 | Cert downgrade: target EV/OV vs suspect DV  | +40    |
 | Registrar mismatch                          | +30    |
 | Same-class issuer difference (display only) | +0     |
+| Rogue TLS: per-path cert divergence (suspect) | +50  |
+| Rogue ASN: per-path AS split (suspect)      | +30    |
+| Hosts-file override (suspect)               | +50    |
+| Rogue signals target-side/inconclusive (info) | +0   |
 
 | Score | Verdict                                |
 |-------|----------------------------------------|
@@ -184,7 +193,7 @@ resort, with a warning.
 ## Project layout
 
 ```text
-cmd/isthislegit   CLI parsing, fetch orchestration, output dispatch
+cmd/phisherslapper   CLI parsing, fetch orchestration, output dispatch
 internal/dns      Domain normalization, syntax checks, DNS pre-flight
 internal/cert     TLS leaf fetch and validation-level classification
 internal/rdap     RDAP client, creation date and registrar extraction
@@ -194,6 +203,6 @@ internal/report   Human, JSON, scale, and verbose renderers
 
 ## License
 
-Copyright (C) 2026 Mark Robillard Jr (MARKMENTAL). `isthislegit` is free
+Copyright (C) 2026 Mark Robillard Jr (MARKMENTAL). `phisherslapper` is free
 software licensed under the GNU General Public License v3 — see
 [LICENSE](LICENSE) for the full text.

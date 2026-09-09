@@ -1,4 +1,4 @@
-module isthislegit
+module phisherslapper
 
 go 1.24
 
