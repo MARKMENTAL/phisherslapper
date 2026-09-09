@@ -31,7 +31,11 @@ include the underlying fetch cause(s).</p>
 
 <font color="#859900"><h2>Flow</h2></font>
 <ol>
-<li>DNS pre-flight for both domains in parallel; any failure aborts.</li>
+<li>DNS pre-flight probes each unique domain once across the system and
+pinned resolvers; system failure aborts (with hijack-aware messaging when
+public resolvers resolve live). Outcomes are reused downstream, so no
+resolver is queried twice - identical domains are fetched once and the
+result shared.</li>
 <li>Per-domain fetch in parallel: RDAP
 (<a href="rdap.html#Query">rdap.Query</a>) plus TLS
 (<a href="cert.html#InspectDomain">cert.InspectDomain</a>) concurrently.
@@ -51,5 +55,7 @@ plus <a href="report.html#Verbose">report.Verbose</a> when verbose.</li>
 output, and <tt>--scale</tt> header. Build target:
 <tt>CGO_ENABLED=0 go build -ldflags="-s -w" -o isthislegit
 ./cmd/isthislegit</tt>.</p>
+<hr>
+<font color="#b58900">Licensed under the GNU General Public License v3 - Mark Robillard Jr (MARKMENTAL)</font>
 </body>
 </html>

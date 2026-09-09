@@ -1,3 +1,8 @@
+// Copyright (C) 2026 Mark Robillard Jr (MARKMENTAL)
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License v3. See LICENSE.
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Command isthislegit compares a known-legitimate domain against a suspect
 // domain using X.509 TLS certificates, RDAP registration data, and DNS
 // resolution to produce a risk score and verdict. Stdlib only, plus
@@ -54,11 +59,12 @@ type domainResult struct {
 	info    score.DomainData
 	cert    *cert.Details
 	rdap    *rdap.Result
+	cons    dns.Consistency
 	rdapErr error
 	certErr error
 }
 
-func fetchDomain(ctx context.Context, client *http.Client, domain string, now time.Time, perCall time.Duration) domainResult {
+func fetchDomain(ctx context.Context, client *http.Client, domain string, now time.Time, perCall time.Duration, dc dns.DomainCheck) domainResult {
 	res := domainResult{info: score.DomainData{Domain: domain}}
 	var g errgroup.Group
 
@@ -75,12 +81,17 @@ func fetchDomain(ctx context.Context, client *http.Client, domain string, now ti
 		cd, res.certErr = c, err
 		return err
 	})
-	// Fail-open per field; the root causes are kept for the
-	// fail-closed verdict gate below.
+	// DNS was probed once in pre-flight; reuse those outcomes here so no
+	// resolver is queried twice. Fail-open per field; the root causes are
+	// kept for the fail-closed verdict gate below.
 	_ = g.Wait()
 
 	res.rdap = rd
 	res.cert = cd
+	res.cons = dc.Consistency
+	res.info.DNSTampered = res.cons.Tampered
+	res.info.DNSSplit = res.cons.Kind
+	res.info.DNSDetail = res.cons.Detail
 
 	res.info.Date = rdap.RegistrationDate(rd)
 	res.info.Registrar = rdap.Registrar(rd)
@@ -187,20 +198,44 @@ func run() int {
 	ctx, cancel := context.WithTimeout(context.Background(), globalTimeout)
 	defer cancel()
 
-	// DNS pre-flight for both domains in parallel (fail fast like bash check_dns).
-	var dg errgroup.Group
-	for _, d := range []string{legit, suspect} {
-		d := d
-		dg.Go(func() error {
-			if err := dns.CheckDNS(ctx, d, perCall); err != nil {
-				return fmt.Errorf("domain '%s' failed DNS resolution (NXDOMAIN or offline). Aborting", d)
-			}
+	// DNS pre-flight probes each unique domain once across the system and
+	// pinned resolvers. Outcomes are reused by the fetch stage, so no
+	// resolver is queried twice for one domain.
+	uniq := []string{legit}
+	if suspect != legit {
+		uniq = append(uniq, suspect)
+	}
+	type domainProbe struct {
+		domain string
+		check  dns.DomainCheck
+	}
+	probes := make([]domainProbe, len(uniq))
+	var pg errgroup.Group
+	for i := range uniq {
+		pg.Go(func() error {
+			probes[i] = domainProbe{domain: uniq[i], check: dns.CheckDomain(ctx, uniq[i], perCall)}
 			return nil
 		})
 	}
-	if err := dg.Wait(); err != nil {
-		fmt.Fprintf(os.Stderr, "[!] Error: %v.\n", err)
-		return 1
+	_ = pg.Wait()
+	probeFor := func(domain string) dns.DomainCheck {
+		for _, p := range probes {
+			if p.domain == domain {
+				return p.check
+			}
+		}
+		return dns.DomainCheck{}
+	}
+	for _, rd := range []struct{ role, domain string }{{"target", legit}, {"suspect", suspect}} {
+		dc := probeFor(rd.domain)
+		if !dc.SystemLive && dc.PublicLive {
+			fmt.Fprintf(os.Stderr, "[!] Error: Domain '%s' (%s) suppressed locally: system resolver reports NXDOMAIN while public resolvers resolve live — possible DNS hijacking. Aborting.\n", rd.domain, rd.role)
+			return 1
+		}
+		if !dc.SystemLive {
+			fmt.Fprintf(os.Stderr, "[!] Error: Domain '%s' (%s) failed DNS resolution (NXDOMAIN or offline). Aborting.\n", rd.domain, rd.role)
+			return 1
+		}
 	}
 
 	client := &http.Client{}
@@ -210,17 +245,21 @@ func run() int {
 	}
 	now := time.Now()
 
-	var target, sus domainResult
+	fetched := make([]domainResult, len(uniq))
 	var fg errgroup.Group
-	fg.Go(func() error {
-		target = fetchDomain(ctx, client, legit, now, perCall)
-		return nil
-	})
-	fg.Go(func() error {
-		sus = fetchDomain(ctx, client, suspect, now, perCall)
-		return nil
-	})
+	for i := range uniq {
+		fg.Go(func() error {
+			fetched[i] = fetchDomain(ctx, client, uniq[i], now, perCall, probeFor(uniq[i]))
+			return nil
+		})
+	}
 	_ = fg.Wait()
+	results := make(map[string]domainResult, len(uniq))
+	for i, d := range uniq {
+		results[d] = fetched[i]
+	}
+	target := results[legit]
+	sus := results[suspect]
 
 	if err := score.VerifyDataQuality(target.info, sus.info); err != nil {
 		msg := fmt.Sprintf("[!] Error: %v.", err)

@@ -4,7 +4,14 @@ Domain Impersonation & OSINT Triage Tool.
 
 `isthislegit` compares a known-legitimate domain (target) against a suspect
 domain using DNS resolution, X.509 TLS certificates, and RDAP registration
-data to produce a deterministic risk score and verdict. It ships as a single
+data to produce a deterministic risk score and verdict. DNS answers are
+cross-checked across the system resolver, 1.1.1.1, and 8.8.8.8 for
+split-brain or hijacking signals (state consistency only — raw addresses
+are never compared, so CDN/GeoDNS fronting stays quiet). Each unique
+domain is probed once and the outcomes reused; even identical
+target/suspect pairs run the full pipeline (verdict forced to legitimate).
+System-dark/public-live suppression splits score on the suspect, while
+split-horizon shapes stay display-only. It ships as a single
 static binary built on the Go standard library (plus `golang.org/x/sync` for
 the concurrent fetch pipeline) — no `curl`, `openssl`, `jq`, or `dig`
 required.
@@ -146,8 +153,14 @@ VERDICT: LIKELY UNRELATED / MISCONFIGURED
 
 | Signal                                      | Points |
 |---------------------------------------------|--------|
-| Suspect domain age < 30 days (CRITICAL)     | +80    |
-| Suspect domain age 30–89 days (WARNING)     | +80    |
+| Suspect < 30d (CRITICAL), stacked w/ signal | +80    |
+| Suspect < 30d (CRITICAL), isolated          | +40    |
+| Suspect 30–89d (WARNING), stacked w/ signal | +40    |
+| Suspect 30–89d (WARNING), isolated          | +20    |
+| Shared cert infrastructure (halves age tier)| x0.5   |
+| Identical target/suspect (forced LEGITIMATE)  | +0     |
+| Resolution tampering: suppression split (suspect) | +50    |
+| DNS split-horizon / target-side (display only)  | +0     |
 | Cert downgrade: target EV/OV vs suspect DV  | +40    |
 | Registrar mismatch                          | +30    |
 | Same-class issuer difference (display only) | +0     |
@@ -178,3 +191,9 @@ internal/rdap     RDAP client, creation date and registrar extraction
 internal/score    Risk scoring and verdict mapping
 internal/report   Human, JSON, scale, and verbose renderers
 ```
+
+## License
+
+Copyright (C) 2026 Mark Robillard Jr (MARKMENTAL). `isthislegit` is free
+software licensed under the GNU General Public License v3 — see
+[LICENSE](LICENSE) for the full text.

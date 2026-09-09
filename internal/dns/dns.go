@@ -1,14 +1,15 @@
+// Copyright (C) 2026 Mark Robillard Jr (MARKMENTAL)
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License v3. See LICENSE.
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Package dns provides domain normalization, syntax validation,
-// and DNS pre-flight resolution checks.
+// and multi-resolver resolution checks.
 package dns
 
 import (
-	"context"
-	"fmt"
-	"net"
 	"regexp"
 	"strings"
-	"time"
 )
 
 var domainRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$`)
@@ -34,19 +35,4 @@ func NormalizeDomain(d string) string {
 // Mirrors bash valid_domain_syntax.
 func ValidSyntax(d string) bool {
 	return domainRe.MatchString(d)
-}
-
-// CheckDNS aborts early on NXDOMAIN / unresolvable names.
-// Mirrors bash check_dns (dig +short A). Uses the stdlib resolver.
-func CheckDNS(ctx context.Context, domain string, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	addrs, err := net.DefaultResolver.LookupIP(ctx, "ip4", domain)
-	if err != nil {
-		return fmt.Errorf("domain '%s' failed DNS resolution (NXDOMAIN or offline): %w", domain, err)
-	}
-	if len(addrs) == 0 {
-		return fmt.Errorf("domain '%s' failed DNS resolution (NXDOMAIN or offline): no addresses", domain)
-	}
-	return nil
 }

@@ -1,3 +1,8 @@
+// Copyright (C) 2026 Mark Robillard Jr (MARKMENTAL)
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License v3. See LICENSE.
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Package report renders human, JSON, scale, and verbose output.
 // Mirrors bash render_human / render_json / render_scale / render_verbose,
 // plus the restored Validation line (per user decision).
@@ -32,14 +37,20 @@ type Data struct {
 
 // Scale prints the scoring reference table (no lookups performed).
 func Scale(version string) string {
-	return fmt.Sprintf(`isthislegit? [v%s] — Scoring Scale (max total: 150)
+	return fmt.Sprintf(`isthislegit? [v%s] — Scoring Scale (max total: 200)
 
 Signals:
   +-----------------------------------------------+--------+
   | Signal                                        | Points |
   +-----------------------------------------------+--------+
-  | Suspect domain age < 30 days (CRITICAL)       |  +80   |
-  | Suspect domain age 30-89 days (WARNING)       |  +80   |
+  | Suspect < 30d (CRITICAL), stacked w/ signal   |  +80   |
+  | Suspect < 30d (CRITICAL), isolated            |  +40   |
+  | Suspect 30-89d (WARNING), stacked w/ signal   |  +40   |
+  | Suspect 30-89d (WARNING), isolated            |  +20   |
+  | Shared cert infrastructure (halves age tier)  |  x0.5  |
+  | Identical target/suspect (forced LEGITIMATE)  |   +0   |
+  | DNS suppression split (suspect)               |  +50   |
+  | DNS split-horizon/target-side (info)          |   +0   |
   | Cert downgrade: target EV/OV vs suspect DV    |  +40   |
   | Registrar mismatch                            |  +30   |
   | Same-class issuer difference (display only)   |   +0   |
@@ -200,7 +211,23 @@ func Verbose(d Data) string {
 	writeRDAP(d.TargetDomain, d.TargetRDAP)
 	writeTLS(d.SuspectDomain, d.SuspectCert)
 	writeRDAP(d.SuspectDomain, d.SuspectRDAP)
+	writeDNS(&b, "Target", d.TargetDomain, d.Target.DNSTampered, d.Target.DNSDetail)
+	writeDNS(&b, "Suspect", d.SuspectDomain, d.Suspect.DNSTampered, d.Suspect.DNSDetail)
 	return b.String()
+}
+
+// writeDNS renders the multi-resolver consistency verdict for one domain.
+func writeDNS(b *strings.Builder, label, domain string, tampered bool, detail string) {
+	fmt.Fprintf(b, "--- DNS consistency (%s):\n", domain)
+	if detail == "" {
+		fmt.Fprintf(b, "  consistent across resolvers (%s)\n\n", label)
+		return
+	}
+	status := detail
+	if tampered {
+		status = "TAMPERED: " + detail
+	}
+	fmt.Fprintf(b, "  %s\n\n", status)
 }
 
 func classOf(c *cert.Details) string {

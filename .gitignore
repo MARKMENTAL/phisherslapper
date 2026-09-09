@@ -2,4 +2,4 @@
 AGENTS.md
 .clang-format
 # Built Go binary (replaces bash script in place; bash kept as isthislegit.sh)
-/isthislegit
+/isthislegit*

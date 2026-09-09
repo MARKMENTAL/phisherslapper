@@ -44,6 +44,16 @@ cause(s).</p>
 <tt>--help</tt>), <tt>1</tt> on bad flags, invalid domains, DNS failure, or
 failed data-quality verification.</p>
 
+<font color="#859900"><h2>DNS Consistency</h2></font>
+<p>Each domain is probed once by the system resolver plus pinned 1.1.1.1 and
+8.8.8.8 servers, and the outcomes are reused downstream. Only state is
+compared, never raw addresses: system-dark/public-live suppression splits
+and NS delegation splits flag tampering (+50 on the suspect), while
+system-live/public-dark split-horizon shapes and target-side splits stay
+display-only NOTEs. CDN/GeoDNS address churn stays quiet. Inconclusive
+resolvers abstain; filtered resolvers are excluded by design. The
+pre-flight gate aborts on system failure with hijack-aware messaging.</p>
+
 <font color="#859900"><h2>Embedded Systems</h2></font>
 <p>The tool runs on embedded ARM devices (verified on a Miyoo Mini Plus),
 but minimal firmware often ships without a CA certificate store. DNS and
@@ -55,8 +65,14 @@ where possible, otherwise use <tt>-k/--insecure</tt> as a last resort.</p>
 <font color="#859900"><h2>Scoring Scale</h2></font>
 <table border="1" cellpadding="4">
 <tr><th>Signal</th><th>Points</th></tr>
-<tr><td>Suspect domain age &lt; 30 days (CRITICAL)</td><td>+80</td></tr>
-<tr><td>Suspect domain age 30-89 days (WARNING)</td><td>+80</td></tr>
+<tr><td>Suspect &lt; 30d (CRITICAL), stacked w/ signal</td><td>+80</td></tr>
+<tr><td>Suspect &lt; 30d (CRITICAL), isolated</td><td>+40</td></tr>
+<tr><td>Suspect 30-89d (WARNING), stacked w/ signal</td><td>+40</td></tr>
+<tr><td>Suspect 30-89d (WARNING), isolated</td><td>+20</td></tr>
+<tr><td>Shared cert infrastructure (halves age tier)</td><td>x0.5</td></tr>
+<tr><td>Identical target/suspect (forced LEGITIMATE)</td><td>+0</td></tr>
+<tr><td>Resolution tampering: suppression split (suspect)</td><td>+50</td></tr>
+<tr><td>DNS split-horizon / target-side (display only)</td><td>+0</td></tr>
 <tr><td>Cert downgrade: target EV/OV vs suspect DV</td><td>+40</td></tr>
 <tr><td>Registrar mismatch</td><td>+30</td></tr>
 <tr><td>Same-class issuer difference (display only)</td><td>+0</td></tr>
@@ -79,5 +95,7 @@ where possible, otherwise use <tt>-k/--insecure</tt> as a last resort.</p>
 <li><a href="report.html"><b>report</b></a> - human, JSON, scale, and verbose renderers.</li>
 <li><a href="main.html"><b>main</b></a> - CLI entry point and fetch orchestration.</li>
 </ul>
+<hr>
+<font color="#b58900">Licensed under the GNU General Public License v3 - Mark Robillard Jr (MARKMENTAL)</font>
 </body>
 </html>

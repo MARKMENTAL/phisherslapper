@@ -5,7 +5,8 @@
 </head>
 <body bgcolor="#002b36" text="#a3b8b9" link="#859900" vlink="#b58900">
 <font color="#b58900"><h1>Package score</h1></font>
-<p>Deterministic risk scoring: domain-age check (+80), certificate
+<p>Deterministic risk scoring: domain-age check (contextual tiers with
+stacking and shared-cert discount), certificate
 downgrade check (+40), and registrar mismatch (+30), mapped onto a
 four-tier verdict. Sources: <tt>internal/score/score.go</tt>,
 <tt>internal/score/date.go</tt>.</p>
@@ -56,11 +57,18 @@ The CLI aborts instead of printing a verdict built on missing data.</p>
 <a name="Score"></a>
 <font color="#859900"><h2>Score</h2></font>
 <table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func Score(target, suspect DomainData) Result</pre></td></tr></table>
-<p>Applies the three signals. Suspect age under 30 days adds 80 with a
-CRITICAL flag; 30-89 days adds 80 with a WARNING flag. Target EV/OV versus
+<p>Applies the signals. Identical domains force score zero and LEGITIMATE
+while still attaching DNS NOTEs. Suspect age
+is contextual: the full tier (&lt; 30d: 80, 30-89d: 40) needs company
+(registrar mismatch or cert downgrade), otherwise the next tier down;
+shared certificate infrastructure (either domain in the other's SANs,
+exactly or via parent wildcard) halves whatever remains. Target EV/OV versus
 suspect DV adds 40 as DOWNGRADE; a same-class issuer difference is a
 display-only NOTE (+0). Case-insensitive registrar mismatch adds 30,
-skipped when either side is unknown.</p>
+skipped when either side is unknown. Suspect-side DNS suppression and NS
+splits add 50; split-horizon shapes and anything target-side are
+display-only NOTEs (+0). Identical domains force score zero and LEGITIMATE
+while still attaching DNS NOTEs.</p>
 <table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>r := score.Score(target, suspect)
 // r.Score, r.Findings, r.Verdict, r.AgeFlag</pre></td></tr></table>
 
@@ -84,5 +92,7 @@ sentinel or garbage value fails by design.</p>
 <table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func AgeDays(ymd string, now time.Time) (days int, ok bool)</pre></td></tr></table>
 <p>Whole days between <tt>ymd</tt> and <tt>now</tt>; <tt>ok</tt> is false
 when <tt>ymd</tt> is unparseable.</p>
+<hr>
+<font color="#b58900">Licensed under the GNU General Public License v3 - Mark Robillard Jr (MARKMENTAL)</font>
 </body>
 </html>

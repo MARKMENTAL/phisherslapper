@@ -1,3 +1,8 @@
+// Copyright (C) 2026 Mark Robillard Jr (MARKMENTAL)
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License v3. See LICENSE.
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Package rdap queries RDAP registration data via https://rdap.org/domain/.
 // Mirrors bash rdap_query / get_registration_date / get_registrar.
 package rdap

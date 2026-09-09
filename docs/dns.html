@@ -5,8 +5,9 @@
 </head>
 <body bgcolor="#002b36" text="#a3b8b9" link="#859900" vlink="#b58900">
 <font color="#b58900"><h1>Package dns</h1></font>
-<p>Domain normalization, syntax validation, and DNS pre-flight resolution
-checks. Source: <tt>internal/dns/dns.go</tt>.</p>
+<p>Domain normalization, syntax validation, DNS pre-flight resolution
+checks, and multi-resolver consistency cross-checks. Sources:
+<tt>internal/dns/dns.go</tt>, <tt>internal/dns/resolvers.go</tt>.</p>
 
 <hr>
 <a name="NormalizeDomain"></a>
@@ -28,17 +29,69 @@ input before any network call.</p>
 dns.ValidSyntax("no-dot")      // =&gt; false</pre></td></tr></table>
 
 <hr>
-<a name="CheckDNS"></a>
-<font color="#859900"><h2>CheckDNS</h2></font>
-<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func CheckDNS(ctx context.Context, domain string, timeout time.Duration) error</pre></td></tr></table>
-<p>Aborts early on NXDOMAIN or unresolvable names via
-<tt>net.DefaultResolver.LookupIP</tt> with the given deadline. Returns
-<tt>nil</tt> when at least one IPv4 address resolves, an error otherwise.</p>
+<a name="DomainCheck"></a>
+<font color="#859900"><h2>DomainCheck</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>type DomainCheck struct {
+    SystemLive bool
+    PublicLive bool
+    Consistency Consistency
+}</pre></td></tr></table>
+<p>One domain's full probe: system liveness for pre-flight gating, public
+liveness for suppression attribution, and the aggregate consistency
+verdict. The pre-flight gate aborts on system failure and reuses these
+outcomes downstream, so each resolver is queried exactly once per
+domain.</p>
+
+<hr>
+<a name="CheckDomain"></a>
+<font color="#859900"><h2>CheckDomain</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func CheckDomain(ctx context.Context, domain string, timeout time.Duration) DomainCheck</pre></td></tr></table>
+<p>Probes the system resolver and pinned public resolvers once. Use
+<tt>SystemLive</tt> for NXDOMAIN gating and <tt>Consistency</tt> for
+scoring and messaging.</p>
+
+<hr>
+<a name="Consistency"></a>
+<font color="#859900"><h2>Consistency</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>type Consistency struct {
+    Checked  bool
+    Tampered bool
+    Kind     SplitKind
+    Detail   string
+}</pre></td></tr></table>
+<p>Verdict of a multi-resolver cross-check. <tt>Detail</tt> names the
+disagreeing resolvers and the split kind when tampered.</p>
+
+<hr>
+<a name="SplitKind"></a>
+<font color="#859900"><h2>SplitKind</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>const (
+    SplitNone SplitKind = iota
+    SplitSuppression
+    SplitHorizon
+    SplitNS
+)</pre></td></tr></table>
+<p>Split direction. Suppression (system dark, public live) signals local
+tampering; horizon (system live, public dark) is the expected split-horizon
+shape of internal names and never scores; NS marks delegation splits.</p>
+
+<hr>
+<a name="CheckConsistency"></a>
+<font color="#859900"><h2>CheckConsistency</h2></font>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func CheckConsistency(ctx context.Context, domain string, timeout time.Duration) Consistency</pre></td></tr></table>
+<p>Queries the system resolver plus pinned 1.1.1.1 and 8.8.8.8 servers in
+parallel (stdlib <tt>net.Resolver</tt> with a pinned dialer; filtered
+resolvers excluded by design). Flags NXDOMAIN-vs-live splits and NS
+delegation splits; raw A records are never compared, so CDN/GeoDNS churn
+stays quiet. Inconclusive resolvers abstain, and fewer than two conclusive
+votes is never tampering. Never fails closed.</p>
 <table border="1" cellpadding="4">
 <tr><th>Parameter</th><th>Description</th></tr>
 <tr><td><tt>ctx</tt></td><td>Parent context; the global 15 second budget.</td></tr>
-<tr><td><tt>domain</tt></td><td>Already-normalized domain to resolve.</td></tr>
-<tr><td><tt>timeout</tt></td><td>Per-call deadline (the CLI --timeout value).</td></tr>
+<tr><td><tt>domain</tt></td><td>Already-normalized domain to cross-check.</td></tr>
+<tr><td><tt>timeout</tt></td><td>Per-resolver deadline (the CLI --timeout value).</td></tr>
 </table>
+<hr>
+<font color="#b58900">Licensed under the GNU General Public License v3 - Mark Robillard Jr (MARKMENTAL)</font>
 </body>
 </html>

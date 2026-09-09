@@ -1,3 +1,8 @@
+// Copyright (C) 2026 Mark Robillard Jr (MARKMENTAL)
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License v3. See LICENSE.
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Package cert fetches leaf X.509 certificates and classifies the
 // CA/Browser Forum validation level from policy OIDs.
 // Mirrors bash get_cert_issuer / get_cert_sans / get_cert_class.

@@ -1,3 +1,8 @@
+// Copyright (C) 2026 Mark Robillard Jr (MARKMENTAL)
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License v3. See LICENSE.
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Command compile is the build driver for isthislegit. It cross-compiles
 // ./cmd/isthislegit for the requested platform/arch matrix:
 //
