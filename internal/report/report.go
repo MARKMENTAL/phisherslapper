@@ -287,20 +287,17 @@ func writePaths(b *strings.Builder, label, domain string, d score.DomainData) {
 	case d.PathChecked:
 		b.WriteString("  per-path TLS: inconclusive (one endpoint refused port 443)\n")
 	}
-	if d.ASNChecked {
-		status := "agree"
-		if !d.ASNMatch {
-			status = "SPLIT"
-		}
-		fmt.Fprintf(b, "  origin AS: local %s vs public %s [%s]\n", asnOrUnknown(d.SysASN), asnOrUnknown(d.PubASN), status)
-	} else {
-		b.WriteString("  origin AS: unattributed (Team Cymru query unanswered)\n")
-	}
-	if d.HostsHit {
-		fmt.Fprintf(b, "  hosts override: STATIC MAPPING %s -> %s\n\n", d.HostsIP, domain)
-	} else {
-		b.WriteString("  hosts override: none\n\n")
-	}
+	asnVerdict := map[bool]string{true: "agree", false: "SPLIT"}[d.ASNMatch]
+	asnLine := map[bool]string{
+		true:  fmt.Sprintf("  origin AS: local %s vs public %s [%s]\n", asnOrUnknown(d.SysASN), asnOrUnknown(d.PubASN), asnVerdict),
+		false: "  origin AS: unattributed (Team Cymru query unanswered)\n",
+	}[d.ASNChecked]
+	b.WriteString(asnLine)
+	hostsLine := map[bool]string{
+		true:  fmt.Sprintf("  hosts override: STATIC MAPPING %s -> %s\n\n", d.HostsIP, domain),
+		false: "  hosts override: none\n\n",
+	}[d.HostsHit]
+	b.WriteString(hostsLine)
 }
 
 func asnOrUnknown(s string) string {

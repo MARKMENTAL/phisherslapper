@@ -28,7 +28,7 @@ import (
 	"phisherslapper/internal/score"
 )
 
-const version = "1.01"
+const version = "1.02"
 
 const defaultPerCall = 5 * time.Second
 const globalTimeout = 15 * time.Second
@@ -100,25 +100,30 @@ func fetchDomain(ctx context.Context, client *http.Client, domain string, now ti
 		pubIP = dc.PublicAddrs[0]
 	}
 	if sysIP != nil && pubIP != nil {
-		if sysIP.Equal(pubIP) {
-			// Same endpoint both paths: one dial attests for both.
-			g.Go(func() error {
-				c, _ := cert.InspectAddr(ctx, sysIP, domain, perCall)
-				res.sysCert, res.pubCert = c, c
-				return nil
-			})
-		} else {
-			g.Go(func() error {
-				c, _ := cert.InspectAddr(ctx, sysIP, domain, perCall)
-				res.sysCert = c
-				return nil
-			})
-			g.Go(func() error {
-				c, _ := cert.InspectAddr(ctx, pubIP, domain, perCall)
-				res.pubCert = c
-				return nil
-			})
-		}
+		// Shared vs split endpoints dispatch which per-path probes run:
+		// one dial attests for both when the paths converge.
+		probePaths := map[bool]func(){
+			true: func() {
+				g.Go(func() error {
+					c, _ := cert.InspectAddr(ctx, sysIP, domain, perCall)
+					res.sysCert, res.pubCert = c, c
+					return nil
+				})
+			},
+			false: func() {
+				g.Go(func() error {
+					c, _ := cert.InspectAddr(ctx, sysIP, domain, perCall)
+					res.sysCert = c
+					return nil
+				})
+				g.Go(func() error {
+					c, _ := cert.InspectAddr(ctx, pubIP, domain, perCall)
+					res.pubCert = c
+					return nil
+				})
+			},
+		}[sysIP.Equal(pubIP)]
+		probePaths()
 		g.Go(func() error {
 			a, ok := dns.LookupASN(ctx, sysIP, perCall)
 			res.sysASN, res.sysASNOK = a, ok

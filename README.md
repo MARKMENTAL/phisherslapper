@@ -1,4 +1,9 @@
-# phisherslapper [v1.01]
+# phisherslapper [v1.02]
+
+> **Note:** `isthislegit` has been renamed to `phisherslapper`. We do not
+> condone physical violence against phishers — but you are warmly encouraged
+> to metaphorically slap them with this tool's output in your reply the next
+> time they try to scam you.
 
 Domain Impersonation & OSINT Triage Tool.
 
@@ -128,7 +133,7 @@ resort for devices without stored CA certificates.
 ## Example output
 
 ```text
-phisherslapper [v1.01]
+phisherslapper [v1.02]
 Domain Impersonation & OSINT Triage Tool
 
 [*] Comparing: example.com (Target) <---> example.org (Suspect)
