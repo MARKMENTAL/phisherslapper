@@ -1,11 +1,28 @@
-# phisherslapper [v1.02]
+# phisherslapper [v1.03]
 
 > **Note:** `isthislegit` has been renamed to `phisherslapper`. We do not
 > condone physical violence against phishers — but you are warmly encouraged
 > to metaphorically slap them with this tool's output in your reply the next
 > time they try to scam you.
 
-Domain Impersonation & OSINT Triage Tool.
+Domain impersonation triage — auditing the identity claims websites make
+in their TLS certificates, and exposing the bad cryptographic hygiene of
+untrustworthy actors.
+
+Every website stakes an identity claim in its X.509 leaf certificate, and
+strong claims cost real money to fake. Legitimate organizations show
+discipline: Extended or Organization Validation (a CA actually vetted the
+*company*, not just the domain), a consistent corporate issuer, a curated
+SAN portfolio of real products, and the same TLS identity on every network
+path. Untrustworthy actors leak hygiene gaps at every turn: free automated
+DV certificates issued in minutes, one-domain SAN sets naming only the
+clone itself, a validation downgrade from the target's EV/OV to DV, and
+sometimes a different certificate served depending on which DNS answer you
+believe. `phisherslapper` reads the claim straight from the certificate —
+policy OIDs, issuer, SANs, leaf fingerprints — then cross-examines it
+against DNS resolution (system plus pinned public resolvers), RDAP
+registration, SPF/DMARC sender authority, and origin-AS infrastructure,
+scoring every gap it finds.
 
 `phisherslapper` compares a known-legitimate domain (target) against a suspect
 domain using DNS resolution, X.509 TLS certificates, and RDAP registration
@@ -23,22 +40,54 @@ required.
 
 ## Features
 
-- **DNS pre-flight** — NXDOMAIN / unresolvable domains abort early.
+- **X.509 identity analysis** — leaf certificate issuer, SANs, and validation
+  level (EV / OV / IV / DV) from CA/Browser Forum policy OIDs. The claim
+  itself is the evidence.
 - **Rogue-redirection probes** — per-path TLS identity comparison (local
   vs public endpoint), origin-AS attribution via Team Cymru, and a
   hosts-file override check.
-- **X.509 classification** — leaf certificate issuer, SANs, and validation
-  level (EV / OV / IV / DV) from CA/Browser Forum policy OIDs.
-- **RDAP triage** — creation date and registrar via `https://rdap.org/domain/`.
 - **Relationship classification** — identical, SAN/SPF-endorsed, lookalike
   (confusable-aware label similarity), or unrelated. `LIKELY LEGITIMATE`
   requires a relationship; unrelated pairs read `UNRELATED — NO AUTHORITY
   OVER TARGET` instead of a false-negative legitimate.
 - **Sender authority** — target SPF evaluation (RFC 7208 subset, pinned
   resolver) for the suspect IP, plus target DMARC policy as context.
+- **DNS pre-flight** — NXDOMAIN / unresolvable domains abort early.
+- **RDAP triage** — creation date and registrar via `https://rdap.org/domain/`.
 - **Deterministic scoring** — transparent point system with a five-way verdict.
 - **Flexible output** — human-readable report, `--json` for scripting,
   `--verbose` for raw OIDs, cert details, and RDAP payloads.
+
+## TLS identity analysis
+
+The certificate is the suspect's own testimony, and `phisherslapper`
+treats it that way. Each property below is read directly from the leaf
+certificate and scored when it contradicts the target's established
+identity:
+
+| Property | What it reveals |
+|---|---|
+| Policy OIDs → EV / OV / IV / DV class | Identity-strength of the claim: an organization-vetted EV/OV cert vs a DV cert any script can mint in five minutes |
+| Issuer organization | A corporate CA standing behind the claim vs a free automated CA on a supposed "corporate" clone |
+| SAN portfolio | Endorsement: the target's cert names the suspect's infrastructure — or a single-domain SAN naming only the clone |
+| Leaf SHA-256 fingerprint, per resolution path | The same identity served everywhere vs a different certificate depending on which DNS answer you believe (rogue redirection, +50) |
+| Validation downgrade, target EV/OV → suspect DV | +40: the suspect can't or won't maintain the validation level the real brand pays for |
+
+The classic phishing shape is cheap crypto stacked on a young identity:
+DV-only, days-old registration, a budget registrar with no overlap with
+the target's brand-protection registrar. Each gap scores on its own; the
+worked contrast below shows how they add up:
+
+```text
+Legitimate claim                        Sketchy claim
+EV cert via a corporate CA              DV cert from a free automated CA
+SANs: brand.com + 20 product domains    SANs: one domain — the clone itself
+Registered 2003, corporate registrar    Registered 3 weeks ago, budget registrar
+Same TLS identity on every path         Different cert per DNS path
+
+Finding tripped:                        DOWNGRADE +40, MISMATCH +30,
+                                        CRITICAL age +80, REDIRECTION +50
+```
 
 ## Prerequisites
 
@@ -144,7 +193,7 @@ resort for devices without stored CA certificates.
 ## Example output
 
 ```text
-phisherslapper [v1.02]
+phisherslapper [v1.03]
 Domain Impersonation & OSINT Triage Tool
 
 [*] Comparing: example.com (Target) <---> example.org (Suspect)
@@ -227,7 +276,7 @@ resort, with a warning.
 ```text
 cmd/phisherslapper   CLI parsing, fetch orchestration, output dispatch
 internal/dns      Domain normalization, syntax checks, DNS pre-flight
-internal/cert     TLS leaf fetch and validation-level classification
+internal/cert     TLS identity claims: leaf fetch, OID classification, per-path comparison
 internal/rdap     RDAP client, creation date and registrar extraction
 internal/score    Risk scoring and verdict mapping
 internal/report   Human, JSON, scale, and verbose renderers

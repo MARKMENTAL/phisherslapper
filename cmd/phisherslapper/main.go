@@ -28,7 +28,7 @@ import (
 	"phisherslapper/internal/score"
 )
 
-const version = "1.02"
+const version = "1.03"
 
 const defaultPerCall = 5 * time.Second
 const globalTimeout = 15 * time.Second
