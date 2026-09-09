@@ -44,14 +44,20 @@ type DomainData struct {
 	ASNMatch     bool   // both paths share an origin AS
 	HostsHit     bool   // static hosts-file mapping exists
 	HostsIP      string // the mapped IP
+	// Sender authority: does the target authorize the suspect?
+	SPFChecked    bool   // target SPF was retrieved and evaluated
+	SPFAuthorized bool   // suspect IP is covered by target SPF
+	SPFCover      string // covering mechanism, e.g. "include:_spf.google.com"
+	DMARCPolicy   string // target DMARC p= value, "" when unpublished
 }
 
 // Result is the outcome of scoring a target/suspect pair.
 type Result struct {
-	Score    int
-	Findings []string
-	Verdict  string
-	AgeFlag  string
+	Score        int
+	Findings     []string
+	Verdict      string
+	AgeFlag      string
+	Relationship string // identical | san_endorsed | spf_endorsed | lookalike | unrelated
 }
 
 // classLongNames maps validation classes to human-readable names.
@@ -111,6 +117,7 @@ func Score(target, suspect DomainData) Result {
 		}
 		notePathIntel(&r, target, "target")
 		r.Verdict = Verdict(r.Score)
+		r.Relationship = RelIdentical
 		return r
 	}
 
@@ -120,18 +127,20 @@ func Score(target, suspect DomainData) Result {
 	mismatch := registrarMismatch(target, suspect)
 	stacked := mismatch || isDowngrade
 	sharedCert := sansOverlap(target, suspect)
+	spfEndorsed := suspect.SPFChecked && suspect.SPFAuthorized
+	endorsed := sharedCert || spfEndorsed
 
 	// Age check with stacking and shared-infrastructure discount.
 	if suspect.AgeKnown {
 		switch {
 		case suspect.AgeDays < 30:
 			r.AgeFlag = "  [CRITICAL: Domain created < 30 days ago]"
-			r.Score += agePoints(80, stacked, sharedCert)
-			r.Findings = append(r.Findings, ageFinding(suspect.Date, 80, stacked, sharedCert))
+			r.Score += agePoints(80, stacked, endorsed)
+			r.Findings = append(r.Findings, ageFinding(suspect.Date, 80, stacked, sharedCert, spfEndorsed))
 		case suspect.AgeDays < 90:
 			r.AgeFlag = "  [WARNING: Domain created < 90 days ago]"
-			r.Score += agePoints(40, stacked, sharedCert)
-			r.Findings = append(r.Findings, ageFinding(suspect.Date, 40, stacked, sharedCert))
+			r.Score += agePoints(40, stacked, endorsed)
+			r.Findings = append(r.Findings, ageFinding(suspect.Date, 40, stacked, sharedCert, spfEndorsed))
 		}
 	}
 
@@ -144,9 +153,16 @@ func Score(target, suspect DomainData) Result {
 	}
 
 	// Registrar mismatch => +30 (skipped when either side is unknown).
+	// A shared known registrar is display-only legitimacy context.
 	if mismatch {
 		r.Score += 30
 		r.Findings = append(r.Findings, fmt.Sprintf("MISMATCH: Registrars do not align (%s vs %s).", target.Registrar, suspect.Registrar))
+	}
+	if !mismatch && knownRegistrar(target.Registrar) && knownRegistrar(suspect.Registrar) {
+		r.Findings = append(r.Findings, fmt.Sprintf("NOTE: Both domains registered through %s — shared enterprise brand-protection registrar.", target.Registrar))
+	}
+	if target.DMARCPolicy != "" {
+		r.Findings = append(r.Findings, fmt.Sprintf("NOTE: Target publishes DMARC p=%s (%s).", target.DMARCPolicy, dmarcTail(target.DMARCPolicy)))
 	}
 
 	// Resolution tampering => +50 on the suspect side for suppression and
@@ -186,6 +202,17 @@ func Score(target, suspect DomainData) Result {
 	notePathIntel(&r, target, "target")
 
 	r.Verdict = Verdict(r.Score)
+	r.Relationship = classifyRelationship(target, suspect)
+	// Unrelated pairs can never be legitimate *as the target*: two clean
+	// companies sharing nothing still means zero cross-domain authority.
+	// SUSPICIOUS and PHISHING bands keep their verdicts.
+	if r.Relationship == RelUnrelated && (r.Verdict == VerdictLegitimate || r.Verdict == VerdictMaliciousOrNegligent) {
+		r.Verdict = VerdictUnrelated
+		r.Findings = append(r.Findings, fmt.Sprintf("NO AUTHORITY: %s is a legitimate domain but holds no authorization to act for %s (absent from target SANs, not SPF-endorsed). Zero-trust: any email or link using it in %s's name is hostile.", suspect.Domain, target.Domain, target.Domain))
+	}
+	if r.Verdict == VerdictMaliciousOrNegligent {
+		r.Findings = append(r.Findings, "EXPLANATION: This band means the suspect's infrastructure contradicts a legitimate identity. (A) Likely: deliberately built malicious infrastructure — hidden identity, spoofed headers, sketchy proxies. (B) Virtually impossible for a real business: incompetence so severe no legitimate operator this broken survives. Either way, do not trust this domain.")
+	}
 	return r
 }
 
@@ -228,22 +255,150 @@ func parenthesize(s string) string {
 	return "(" + s + ")"
 }
 
+// classifyRelationship names the target/suspect relationship. Endorsement
+// (shared SANs, SPF coverage) and visual/structural similarity admit the
+// pair to the LEGITIMATE band; anything else is unrelated — and an
+// unrelated pair can never be legitimate as the target. Pure function.
+func classifyRelationship(target, suspect DomainData) string {
+	if target.Domain != "" && strings.EqualFold(target.Domain, suspect.Domain) {
+		return RelIdentical
+	}
+	if sansOverlap(target, suspect) {
+		return RelSANEndorsed
+	}
+	if suspect.SPFChecked && suspect.SPFAuthorized {
+		return RelSPFEndorsed
+	}
+	if labelsSimilar(rootLabel(target.Domain), rootLabel(suspect.Domain)) {
+		return RelLookalike
+	}
+	return RelUnrelated
+}
+
+// rootLabel returns the leftmost (most significant) domain label,
+// lowercased: the brand-bearing part of the name.
+func rootLabel(domain string) string {
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	if i := strings.Index(domain, "."); i >= 0 {
+		return domain[:i]
+	}
+	return domain
+}
+
+// labelsSimilar reports a visual/structural match between root labels:
+// confusable-normalized equality, edit distance <= 2 on names of 4+
+// characters, or containment with the shorter side >= 5 characters.
+// Deliberately strict: distinct brands must read unrelated. Pure.
+func labelsSimilar(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	na, nb := normalizeConfusables(a), normalizeConfusables(b)
+	if na == nb {
+		return true
+	}
+	shorter := len(na)
+	if len(nb) < shorter {
+		shorter = len(nb)
+	}
+	if shorter < 4 {
+		return false
+	}
+	if levenshtein(na, nb) <= 2 {
+		return true
+	}
+	if shorter >= 5 && (strings.Contains(na, nb) || strings.Contains(nb, na)) {
+		return true
+	}
+	return false
+}
+
+// normalizeConfusables folds common homoglyph substitutions so
+// lookalikes (rn/m, 0/o, 1/l) compare equal to their targets.
+func normalizeConfusables(s string) string {
+	s = strings.ToLower(s)
+	replacements := map[string]string{
+		"rn": "m",
+		"vv": "w",
+		"0":  "o",
+		"1":  "l",
+		"5":  "s",
+		"2":  "z",
+	}
+	for old, new := range replacements {
+		s = strings.ReplaceAll(s, old, new)
+	}
+	return s
+}
+
+// levenshtein returns the edit distance between two strings. Pure.
+func levenshtein(a, b string) int {
+	ar, br := []rune(a), []rune(b)
+	prev := make([]int, len(br)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(ar); i++ {
+		cur := make([]int, len(br)+1)
+		cur[0] = i
+		for j := 1; j <= len(br); j++ {
+			cost := 1
+			if ar[i-1] == br[j-1] {
+				cost = 0
+			}
+			cur[j] = min3(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+		}
+		prev = cur
+	}
+	return prev[len(br)]
+}
+
 // registrarMismatch reports a case-insensitive registrar difference,
 // skipped when either side is unknown.
 func registrarMismatch(target, suspect DomainData) bool {
-	known := func(s string) bool { return s != "" && s != "Unknown" }
-	return known(target.Registrar) && known(suspect.Registrar) && !strings.EqualFold(target.Registrar, suspect.Registrar)
+	return knownRegistrar(target.Registrar) && knownRegistrar(suspect.Registrar) && !strings.EqualFold(target.Registrar, suspect.Registrar)
+}
+
+// knownRegistrar reports a usable registrar value (not empty/unknown).
+func knownRegistrar(s string) bool {
+	return s != "" && s != "Unknown"
+}
+
+// dmarcTail words a DMARC enforcement policy for finding text.
+func dmarcTail(policy string) string {
+	tails := map[string]string{
+		"reject":     "unauthorized senders are not tolerated",
+		"quarantine": "unauthorized senders are quarantined",
+		"none":       "target requests no enforcement",
+	}
+	if tail, ok := tails[strings.ToLower(policy)]; ok {
+		return tail
+	}
+	return "unknown enforcement"
+}
+
+func min3(a, b, c int) int {
+	if a < b {
+		if a < c {
+			return a
+		}
+		return c
+	}
+	if b < c {
+		return b
+	}
+	return c
 }
 
 // agePoints resolves an age tier to points: the full tier needs company
-// (stacked signals), otherwise the next tier down; shared certificate
-// infrastructure halves whatever remains.
-func agePoints(tier int, stacked, sharedCert bool) int {
+// (stacked signals), otherwise the next tier down; endorsed
+// infrastructure (shared certs or SPF coverage) halves whatever remains.
+func agePoints(tier int, stacked, endorsed bool) int {
 	points := tier
 	if !stacked {
 		points /= 2
 	}
-	if sharedCert {
+	if endorsed {
 		points /= 2
 	}
 	return points
@@ -251,8 +406,8 @@ func agePoints(tier int, stacked, sharedCert bool) int {
 
 // ageFinding words the age finding by final points, with the reason the
 // tier was reduced when it was.
-func ageFinding(date string, tier int, stacked, sharedCert bool) string {
-	points := agePoints(tier, stacked, sharedCert)
+func ageFinding(date string, tier int, stacked, sharedCert, spfEndorsed bool) string {
+	points := agePoints(tier, stacked, sharedCert || spfEndorsed)
 	level := "LOW RISK"
 	if points >= 80 {
 		level = "HIGH RISK"
@@ -263,6 +418,9 @@ func ageFinding(date string, tier int, stacked, sharedCert bool) string {
 	reason := ""
 	if sharedCert {
 		reason = " Shared certificate infrastructure with target."
+	}
+	if reason == "" && spfEndorsed {
+		reason = " Target SPF authorizes suspect infrastructure."
 	}
 	if reason == "" && !stacked {
 		reason = " No corroborating registrar or certificate signals."
@@ -308,14 +466,37 @@ func isIssuerNote(target, suspect DomainData) bool {
 	return target.Issuer != suspect.Issuer && known(target.Issuer) && known(suspect.Issuer)
 }
 
+// Verdict labels. The 15-39 band is named for what the evidence actually
+// supports: infrastructure that is either deliberately hostile or too
+// broken to belong to a real business — never merely "unrelated".
+const (
+	VerdictPhishing             = "LIKELY PHISHING / IMPERSONATION ATTEMPT"
+	VerdictSuspicious           = "SUSPICIOUS — MANUAL REVIEW RECOMMENDED"
+	VerdictMaliciousOrNegligent = "LIKELY MALICIOUS OR NEGLIGENT"
+	VerdictLegitimate           = "LIKELY LEGITIMATE"
+	VerdictUnrelated            = "UNRELATED — NO AUTHORITY OVER TARGET"
+)
+
+// Relationship classes between target and suspect. Endorsement
+// (shared SANs, SPF coverage) and visual/structural similarity grant
+// access to the LEGITIMATE band; unrelated pairs can never be
+// legitimate *as the target*, however clean each domain is alone.
+const (
+	RelIdentical   = "identical"
+	RelSANEndorsed = "san_endorsed"
+	RelSPFEndorsed = "spf_endorsed"
+	RelLookalike   = "lookalike"
+	RelUnrelated   = "unrelated"
+)
+
 // verdictScale maps minimum scores onto verdicts, highest first (see --scale).
 var verdictScale = []struct {
 	min     int
 	verdict string
 }{
-	{51, "LIKELY PHISHING / IMPERSONATION ATTEMPT"},
-	{40, "SUSPICIOUS — MANUAL REVIEW RECOMMENDED"},
-	{15, "LIKELY UNRELATED / MISCONFIGURED"},
+	{51, VerdictPhishing},
+	{40, VerdictSuspicious},
+	{15, VerdictMaliciousOrNegligent},
 }
 
 // Verdict maps the total score onto a verdict (see --scale).
@@ -325,5 +506,5 @@ func Verdict(score int) string {
 			return v.verdict
 		}
 	}
-	return "LIKELY LEGITIMATE"
+	return VerdictLegitimate
 }

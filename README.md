@@ -30,7 +30,13 @@ required.
 - **X.509 classification** — leaf certificate issuer, SANs, and validation
   level (EV / OV / IV / DV) from CA/Browser Forum policy OIDs.
 - **RDAP triage** — creation date and registrar via `https://rdap.org/domain/`.
-- **Deterministic scoring** — transparent point system with a four-tier verdict.
+- **Relationship classification** — identical, SAN/SPF-endorsed, lookalike
+  (confusable-aware label similarity), or unrelated. `LIKELY LEGITIMATE`
+  requires a relationship; unrelated pairs read `UNRELATED — NO AUTHORITY
+  OVER TARGET` instead of a false-negative legitimate.
+- **Sender authority** — target SPF evaluation (RFC 7208 subset, pinned
+  resolver) for the suspect IP, plus target DMARC policy as context.
+- **Deterministic scoring** — transparent point system with a five-way verdict.
 - **Flexible output** — human-readable report, `--json` for scripting,
   `--verbose` for raw OIDs, cert details, and RDAP payloads.
 
@@ -104,6 +110,11 @@ go run ./compile.go --platform=linux --arch=armv7   # embedded ARM (Miyoo Mini P
 | `--scale`       | Print the scoring scale reference table and exit.             |
 | `-h, --help`    | Display usage and exit.                                       |
 
+The JSON summary carries `verdict`, `relationship` (`identical` /
+`san_endorsed` / `spf_endorsed` / `lookalike` / `unrelated`), a
+`suspect_spf` object (`checked`, `authorized`, `cover`), `target_dmarc`,
+and per-path `target_paths` / `suspect_paths` objects.
+
 Examples:
 
 ```bash
@@ -137,6 +148,7 @@ phisherslapper [v1.02]
 Domain Impersonation & OSINT Triage Tool
 
 [*] Comparing: example.com (Target) <---> example.org (Suspect)
+[*] Relationship: unrelated
 
 [+] Target Domain: example.com
   |-- Creation Date : 1995-08-14
@@ -155,8 +167,9 @@ Domain Impersonation & OSINT Triage Tool
 ----------------------------------------------------------------------
 [!] RISK ANALYSIS (score: 30):
   [!] MISMATCH: Registrars do not align (RESERVED-Internet Assigned Numbers Authority vs ICANN).
+  [!] NO AUTHORITY: example.org is a legitimate domain but holds no authorization to act for example.com (absent from target SANs, not SPF-endorsed). Zero-trust: any email or link using it in example.com's name is hostile.
 
-VERDICT: LIKELY UNRELATED / MISCONFIGURED
+VERDICT: UNRELATED — NO AUTHORITY OVER TARGET
 ```
 
 ## Scoring scale
@@ -181,10 +194,24 @@ VERDICT: LIKELY UNRELATED / MISCONFIGURED
 
 | Score | Verdict                                |
 |-------|----------------------------------------|
-| 0–14  | LIKELY LEGITIMATE                      |
-| 15–39 | LIKELY UNRELATED / MISCONFIGURED       |
+| 0–14  | LIKELY LEGITIMATE (related pair)       |
+| 15–39 | LIKELY MALICIOUS OR NEGLIGENT          |
 | 40–50 | SUSPICIOUS — MANUAL REVIEW RECOMMENDED |
 | 51+   | LIKELY PHISHING / IMPERSONATION ATTEMPT|
+| 0–39* | UNRELATED — NO AUTHORITY OVER TARGET   |
+
+\* Unrelated pair: no shared SANs, SPF coverage, or label similarity.
+`LIKELY LEGITIMATE` requires a relationship (SAN/SPF-endorsed or
+lookalike) — two clean companies sharing nothing still means zero
+cross-domain authority, so the verdict never reads legitimate for them
+(no `google.com` vs `chatgpt.com` false negatives).
+
+The 15–39 band means the suspect's infrastructure contradicts a legitimate
+identity. Scenario A (likely): deliberately built malicious infrastructure
+— hidden identity, spoofed headers, sketchy proxies. Scenario B (virtually
+impossible for a real business): incompetence so severe no legitimate
+operator this broken survives long enough to do business with you. Either
+way, do not trust the domain.
 
 Lookups fail closed: if RDAP dates or TLS data cannot be retrieved for
 either domain, the tool errors out instead of printing a verdict built on

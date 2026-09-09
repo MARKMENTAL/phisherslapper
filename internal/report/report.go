@@ -26,6 +26,7 @@ type Data struct {
 	Score         int
 	Findings      []string
 	Verdict       string
+	Relationship  string
 	AgeFlag       string
 	TargetCert    *cert.Details
 	SuspectCert   *cert.Details
@@ -61,15 +62,23 @@ Signals:
   | Rogue signals target-side/inconclusive (info) |   +0   |
   +-----------------------------------------------+--------+
 
-Verdicts:
+Verdicts (* = unrelated pair: no shared SANs, SPF coverage, or label
+similarity; LEGITIMATE requires a relationship):
   +--------+----------------------------------------+
   | Score  | Verdict                                |
   +--------+----------------------------------------+
   | 0–14   | LIKELY LEGITIMATE                      |
-  | 15–39  | LIKELY UNRELATED / MISCONFIGURED       |
+  | 15–39  | LIKELY MALICIOUS OR NEGLIGENT          |
   | 40–50  | SUSPICIOUS — MANUAL REVIEW RECOMMENDED |
   | 51+    | LIKELY PHISHING / IMPERSONATION ATTEMPT|
+  | 0–39*  | UNRELATED — NO AUTHORITY OVER TARGET   |
   +--------+----------------------------------------+
+
+The 15-39 band means the suspect's infrastructure contradicts a
+legitimate identity: (A) likely deliberate malicious infrastructure
+(hidden identity, spoofed headers, sketchy proxies), or (B) virtually
+impossible for a real business — incompetence so severe no legitimate
+operator this broken survives. Either way, do not trust the domain.
 `, version)
 }
 
@@ -78,7 +87,8 @@ func Human(d Data) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "phisherslapper [v%s]\n", d.Version)
 	b.WriteString("Domain Impersonation & OSINT Triage Tool\n\n")
-	fmt.Fprintf(&b, "[*] Comparing: %s (Target) <---> %s (Suspect)\n\n", d.TargetDomain, d.SuspectDomain)
+	fmt.Fprintf(&b, "[*] Comparing: %s (Target) <---> %s (Suspect)\n", d.TargetDomain, d.SuspectDomain)
+	fmt.Fprintf(&b, "[*] Relationship: %s\n\n", orUnknown(d.Relationship))
 	fmt.Fprintf(&b, "[+] Target Domain: %s\n", d.TargetDomain)
 	fmt.Fprintf(&b, "  |-- Creation Date : %s\n", d.Target.Date)
 	fmt.Fprintf(&b, "  |-- Registrar     : %s\n", d.Target.Registrar)
@@ -165,9 +175,16 @@ func JSON(d Data) string {
 			"cert_class": d.Suspect.Class, "cert_sans": d.Suspect.SANs,
 			"age_days": suspectAge,
 		},
-		"risk_score":    d.Score,
-		"findings":      d.Findings,
-		"verdict":       d.Verdict,
+		"risk_score":   d.Score,
+		"findings":     d.Findings,
+		"verdict":      d.Verdict,
+		"relationship": d.Relationship,
+		"suspect_spf": map[string]any{
+			"checked":    d.Suspect.SPFChecked,
+			"authorized": d.Suspect.SPFAuthorized,
+			"cover":      d.Suspect.SPFCover,
+		},
+		"target_dmarc":  d.Target.DMARCPolicy,
 		"target_paths":  pathOf(d.Target),
 		"suspect_paths": pathOf(d.Suspect),
 	}
@@ -289,7 +306,7 @@ func writePaths(b *strings.Builder, label, domain string, d score.DomainData) {
 	}
 	asnVerdict := map[bool]string{true: "agree", false: "SPLIT"}[d.ASNMatch]
 	asnLine := map[bool]string{
-		true:  fmt.Sprintf("  origin AS: local %s vs public %s [%s]\n", asnOrUnknown(d.SysASN), asnOrUnknown(d.PubASN), asnVerdict),
+		true:  fmt.Sprintf("  origin AS: local %s vs public %s [%s]\n", orUnknown(d.SysASN), orUnknown(d.PubASN), asnVerdict),
 		false: "  origin AS: unattributed (Team Cymru query unanswered)\n",
 	}[d.ASNChecked]
 	b.WriteString(asnLine)
@@ -300,7 +317,8 @@ func writePaths(b *strings.Builder, label, domain string, d score.DomainData) {
 	b.WriteString(hostsLine)
 }
 
-func asnOrUnknown(s string) string {
+// orUnknown renders an optional string for display.
+func orUnknown(s string) string {
 	if s == "" {
 		return "unknown"
 	}

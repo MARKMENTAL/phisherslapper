@@ -119,3 +119,42 @@ func TestScorePathInconclusive(t *testing.T) {
 		t.Errorf("expected inconclusive NOTE, got %v", r.Findings)
 	}
 }
+
+func TestVerdictExplanationAttachedInBand(t *testing.T) {
+	// Lookalike pair (containment): stays in the MALICIOUS band.
+	target := DomainData{Domain: "brand.com", Date: "2000-01-01", Registrar: "Same Inc.", Issuer: "DigiCert Inc", Class: "DV", AgeDays: 9000, AgeKnown: true}
+	suspect := DomainData{Domain: "brand-support.com", Date: "2001-01-01", Registrar: "Same Inc.", Issuer: "DigiCert Inc", Class: "DV", AgeDays: 8000, AgeKnown: true}
+	suspect.ASNChecked, suspect.ASNMatch = true, false
+	suspect.SysASN, suspect.PubASN = "AS666", "AS15169"
+	r := Score(target, suspect)
+	if r.Verdict != VerdictMaliciousOrNegligent {
+		t.Fatalf("Verdict = %q, want %q", r.Verdict, VerdictMaliciousOrNegligent)
+	}
+	if r.Relationship != RelLookalike {
+		t.Errorf("Relationship = %q, want %q", r.Relationship, RelLookalike)
+	}
+	if !findingsContain(r, "EXPLANATION") {
+		t.Errorf("in-band verdict must carry EXPLANATION, got %v", r.Findings)
+	}
+}
+
+func TestVerdictExplanationAbsentOutOfBand(t *testing.T) {
+	target, suspect := rogueBase()
+	// Score 0: legitimate band.
+	if r := Score(target, suspect); findingsContain(r, "EXPLANATION") {
+		t.Errorf("legitimate band must not carry EXPLANATION, got %v", r.Findings)
+	}
+	// Score 51+: phishing band.
+	target2, suspect2 := rogueBase()
+	suspect2.HostsHit, suspect2.HostsIP = true, "127.0.0.1"
+	suspect2.ASNChecked, suspect2.ASNMatch = true, false
+	suspect2.SysASN, suspect2.PubASN = "AS666", "AS15169"
+	if r := Score(target2, suspect2); findingsContain(r, "EXPLANATION") {
+		t.Errorf("phishing band must not carry EXPLANATION, got %v", r.Findings)
+	}
+	// Identical domains: forced legitimate, INFO only.
+	a := DomainData{Domain: "same.com", Date: "2026-09-08", Registrar: "R", Issuer: "I", Class: "DV", SANs: "same.com", AgeDays: 1, AgeKnown: true}
+	if r := Score(a, a); findingsContain(r, "EXPLANATION") {
+		t.Errorf("identical domains must not carry EXPLANATION, got %v", r.Findings)
+	}
+}

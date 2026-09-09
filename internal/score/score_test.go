@@ -20,8 +20,8 @@ func TestScorePhishing(t *testing.T) {
 	if r.Score != 150 {
 		t.Errorf("Score = %d, want 150 (80 age + 40 downgrade + 30 registrar)", r.Score)
 	}
-	if got := Verdict(r.Score); got != "LIKELY PHISHING / IMPERSONATION ATTEMPT" {
-		t.Errorf("Verdict = %q", got)
+	if r.Verdict != VerdictPhishing {
+		t.Errorf("Verdict = %q, want %q", r.Verdict, VerdictPhishing)
 	}
 	if r.AgeFlag == "" {
 		t.Error("expected AgeFlag for <30d domain")
@@ -35,8 +35,27 @@ func TestScoreLegitimate(t *testing.T) {
 	if r.Score != 0 {
 		t.Errorf("Score = %d, want 0", r.Score)
 	}
-	if got := Verdict(r.Score); got != "LIKELY LEGITIMATE" {
-		t.Errorf("Verdict = %q", got)
+	// Zero points but unrelated: no authority, never LEGITIMATE.
+	if r.Verdict != VerdictUnrelated {
+		t.Errorf("Verdict = %q, want %q", r.Verdict, VerdictUnrelated)
+	}
+	if r.Relationship != RelUnrelated {
+		t.Errorf("Relationship = %q, want %q", r.Relationship, RelUnrelated)
+	}
+}
+
+func TestScoreRelatedLegitimate(t *testing.T) {
+	target := DomainData{Domain: "brand.com", Date: "2000-01-01", Registrar: "MarkMonitor Inc.", Issuer: "DigiCert Inc", Class: "OV", AgeDays: 9000, AgeKnown: true}
+	suspect := DomainData{Domain: "cdn.brand.com", Date: "2001-01-01", Registrar: "MarkMonitor Inc.", Issuer: "DigiCert Inc", Class: "OV", SANs: "cdn.brand.com, brand.com", AgeDays: 8000, AgeKnown: true}
+	r := Score(target, suspect)
+	if r.Score != 0 {
+		t.Errorf("Score = %d, want 0", r.Score)
+	}
+	if r.Verdict != VerdictLegitimate {
+		t.Errorf("Verdict = %q, want %q", r.Verdict, VerdictLegitimate)
+	}
+	if r.Relationship != RelSANEndorsed {
+		t.Errorf("Relationship = %q, want %q", r.Relationship, RelSANEndorsed)
 	}
 }
 
@@ -47,8 +66,9 @@ func TestScoreWarningTier(t *testing.T) {
 	if r.Score != 20 {
 		t.Errorf("Score = %d, want 20 (isolated warning tier)", r.Score)
 	}
-	if got := Verdict(r.Score); got != "LIKELY UNRELATED / MISCONFIGURED" {
-		t.Errorf("Verdict = %q", got)
+	// In-band score but unrelated pair: no authority, not MALICIOUS.
+	if r.Verdict != VerdictUnrelated {
+		t.Errorf("Verdict = %q, want %q", r.Verdict, VerdictUnrelated)
 	}
 	if r.AgeFlag == "" {
 		t.Error("expected AgeFlag for 30-89d domain")
@@ -74,8 +94,8 @@ func TestScoreWarningTierStacked(t *testing.T) {
 	if r.Score != 70 {
 		t.Errorf("Score = %d, want 70 (stacked warning 40 + registrar 30)", r.Score)
 	}
-	if got := Verdict(r.Score); got != "LIKELY PHISHING / IMPERSONATION ATTEMPT" {
-		t.Errorf("Verdict = %q", got)
+	if r.Verdict != VerdictPhishing {
+		t.Errorf("Verdict = %q, want %q", r.Verdict, VerdictPhishing)
 	}
 }
 
@@ -109,8 +129,8 @@ func TestScoreCriticalUnstacked(t *testing.T) {
 	if r.Score != 40 {
 		t.Errorf("Score = %d, want 40 (isolated critical)", r.Score)
 	}
-	if got := Verdict(r.Score); got != "SUSPICIOUS — MANUAL REVIEW RECOMMENDED" {
-		t.Errorf("Verdict = %q", got)
+	if r.Verdict != VerdictSuspicious {
+		t.Errorf("Verdict = %q, want %q", r.Verdict, VerdictSuspicious)
 	}
 }
 
@@ -121,8 +141,11 @@ func TestScoreSameClassIssuerDiffNoPoints(t *testing.T) {
 	if r.Score != 0 {
 		t.Errorf("Score = %d, want 0 (display-only NOTE)", r.Score)
 	}
-	if len(r.Findings) != 1 {
-		t.Errorf("expected 1 NOTE finding, got %v", r.Findings)
+	if r.Verdict != VerdictUnrelated {
+		t.Errorf("Verdict = %q, want %q", r.Verdict, VerdictUnrelated)
+	}
+	if !findingsContain(r, "Certificate Issuers differ") {
+		t.Errorf("expected issuer NOTE finding, got %v", r.Findings)
 	}
 }
 
@@ -134,8 +157,8 @@ func TestScoreTamperedSuspect(t *testing.T) {
 	if r.Score != 50 {
 		t.Errorf("Score = %d, want 50 (isolated tampering)", r.Score)
 	}
-	if got := Verdict(r.Score); got != "SUSPICIOUS — MANUAL REVIEW RECOMMENDED" {
-		t.Errorf("Verdict = %q", got)
+	if r.Verdict != VerdictSuspicious {
+		t.Errorf("Verdict = %q, want %q", r.Verdict, VerdictSuspicious)
 	}
 	found := false
 	for _, f := range r.Findings {
@@ -157,8 +180,8 @@ func TestScoreTamperedSuspectStacked(t *testing.T) {
 	if r.Score != 200 {
 		t.Errorf("Score = %d, want 200 (fully stacked)", r.Score)
 	}
-	if got := Verdict(r.Score); got != "LIKELY PHISHING / IMPERSONATION ATTEMPT" {
-		t.Errorf("Verdict = %q", got)
+	if r.Verdict != VerdictPhishing {
+		t.Errorf("Verdict = %q, want %q", r.Verdict, VerdictPhishing)
 	}
 }
 
@@ -170,8 +193,8 @@ func TestScoreTamperedTargetNoteOnly(t *testing.T) {
 	if r.Score != 0 {
 		t.Errorf("Score = %d, want 0 (target-side split is display-only)", r.Score)
 	}
-	if len(r.Findings) != 1 || !strings.Contains(r.Findings[0], "NOTE") {
-		t.Errorf("expected single NOTE finding, got %v", r.Findings)
+	if !findingsContain(r, "observer-side network suspected") {
+		t.Errorf("expected target-side NOTE finding, got %v", r.Findings)
 	}
 }
 
@@ -183,8 +206,8 @@ func TestScoreHorizonNoteOnly(t *testing.T) {
 	if r.Score != 0 {
 		t.Errorf("Score = %d, want 0 (horizon never scores)", r.Score)
 	}
-	if len(r.Findings) != 1 || !strings.Contains(r.Findings[0], "split-horizon") {
-		t.Errorf("expected single split-horizon NOTE, got %v", r.Findings)
+	if !findingsContain(r, "split-horizon") {
+		t.Errorf("expected split-horizon NOTE, got %v", r.Findings)
 	}
 }
 

@@ -348,6 +348,31 @@ func run() int {
 	target := results[legit]
 	sus := results[suspect]
 
+	// Sender-authority stage: does the target authorize the suspect?
+	// Needs both domains' data (target name, suspect IP), so it runs
+	// after the per-domain fetch. Fail-open: inconclusive probes leave
+	// the fields unset and scoring proceeds without them.
+	var sg errgroup.Group
+	sg.Go(func() error {
+		if p, ok := dns.CheckDMARC(ctx, legit, perCall); ok {
+			target.info.DMARCPolicy = p
+		}
+		return nil
+	})
+	sg.Go(func() error {
+		ip := net.ParseIP(sus.info.PubIP)
+		if ip == nil {
+			ip = net.ParseIP(sus.info.SysIP)
+		}
+		if r, ok := dns.CheckSPFAuthority(ctx, legit, ip, perCall); ok {
+			sus.info.SPFChecked = true
+			sus.info.SPFAuthorized = r.Authorized
+			sus.info.SPFCover = r.Cover
+		}
+		return nil
+	})
+	_ = sg.Wait()
+
 	if err := score.VerifyDataQuality(target.info, sus.info); err != nil {
 		msg := fmt.Sprintf("[!] Error: %v.", err)
 		var causes []string
@@ -378,6 +403,7 @@ func run() int {
 		Score:         result.Score,
 		Findings:      result.Findings,
 		Verdict:       result.Verdict,
+		Relationship:  result.Relationship,
 		AgeFlag:       result.AgeFlag,
 		TargetCert:    target.cert,
 		SuspectCert:   sus.cert,

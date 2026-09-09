@@ -43,11 +43,13 @@ probes, and the OS hosts file is checked for static overrides.</li>
 plus rogue-redirection probes: per-path TLS at the system-resolved and
 public-resolved endpoint IPs (SNI preserved) and origin-AS attribution for
 both IPs via Team Cymru. Field-level failures stay open (Unknown) here.</li>
+<li>Sender-authority stage (needs both domains): target SPF evaluation for
+the suspect's IP plus target DMARC lookup, concurrently. Fail-open.</li>
 <li>Fail-closed gate:
 <a href="score.html#VerifyDataQuality">score.VerifyDataQuality</a>; aborts
 on missing dates or TLS data for either side.</li>
 <li><a href="score.html#Score">score.Score</a> produces score, findings,
-verdict, and age flag.</li>
+verdict, relationship, and age flag.</li>
 <li>Render: <a href="report.html#JSON">report.JSON</a> for
 <tt>-j/--json</tt>, otherwise <a href="report.html#Human">report.Human</a>
 plus <a href="report.html#Verbose">report.Verbose</a> when verbose.</li>

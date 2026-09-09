@@ -39,6 +39,7 @@ cause(s).</p>
 <table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>parse args --&gt; DNS pre-flight (target + suspect, parallel; keeps per-path IPs, checks hosts file)
             --&gt; fetch target   = RDAP + TLS + per-path TLS + ASN in parallel
             --&gt; fetch suspect  = RDAP + TLS + per-path TLS + ASN in parallel
+            --&gt; sender authority = target SPF for suspect IP + target DMARC (fail-open)
             --&gt; fail-closed verify --&gt; score --&gt; render</pre></td></tr></table>
 <p>Exit codes: <tt>0</tt> on success (including <tt>--scale</tt> and
 <tt>--help</tt>), <tt>1</tt> on bad flags, invalid domains, DNS failure, or
@@ -82,6 +83,7 @@ where possible, otherwise use <tt>-k/--insecure</tt> as a last resort.</p>
 <tr><td>Suspect 30-89d (WARNING), stacked w/ signal</td><td>+40</td></tr>
 <tr><td>Suspect 30-89d (WARNING), isolated</td><td>+20</td></tr>
 <tr><td>Shared cert infrastructure (halves age tier)</td><td>x0.5</td></tr>
+<tr><td>SPF endorsement (halves age tier)</td><td>x0.5</td></tr>
 <tr><td>Identical target/suspect (forced LEGITIMATE)</td><td>+0</td></tr>
 <tr><td>Resolution tampering: suppression split (suspect)</td><td>+50</td></tr>
 <tr><td>DNS split-horizon / target-side (display only)</td><td>+0</td></tr>
@@ -96,11 +98,25 @@ where possible, otherwise use <tt>-k/--insecure</tt> as a last resort.</p>
 <br>
 <table border="1" cellpadding="4">
 <tr><th>Score</th><th>Verdict</th></tr>
-<tr><td>0-14</td><td>LIKELY LEGITIMATE</td></tr>
-<tr><td>15-39</td><td>LIKELY UNRELATED / MISCONFIGURED</td></tr>
+<tr><td>0-14</td><td>LIKELY LEGITIMATE (related pair)</td></tr>
+<tr><td>15-39</td><td>LIKELY MALICIOUS OR NEGLIGENT (related pair)</td></tr>
 <tr><td>40-50</td><td>SUSPICIOUS - MANUAL REVIEW RECOMMENDED</td></tr>
 <tr><td>51+</td><td>LIKELY PHISHING / IMPERSONATION ATTEMPT</td></tr>
+<tr><td>0-39*</td><td>UNRELATED - NO AUTHORITY OVER TARGET</td></tr>
 </table>
+<p>* Unrelated pair: no shared SANs, SPF coverage, or label similarity.
+LEGITIMATE requires a relationship (endorsed or lookalike). Two clean
+companies sharing nothing still means zero cross-domain authority, so the
+verdict never reads legitimate for them.</p>
+
+<font color="#859900"><h2>Relationship &amp; Sender Authority</h2></font>
+<p>Every pair is classified as identical, SAN-endorsed, SPF-endorsed,
+lookalike (confusable-aware root-label similarity), or unrelated. The
+target's SPF record is evaluated for the suspect's IP (RFC 7208 subset
+through the pinned resolver, 10-lookup budget, fail-open) and the
+target's DMARC policy is shown as context. Absence from SANs/SPF is never
+scored — it only proves no authority, which the UNRELATED verdict
+states.</p>
 
 <font color="#859900"><h2>Packages</h2></font>
 <ul>
