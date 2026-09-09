@@ -34,7 +34,7 @@ required.
 ## Clone, build, run
 
 ```bash
-git clone https://github.com/example/isthislegit.git
+git clone https://github.com/MARKMENTAL/isthislegit.git
 cd isthislegit
 CGO_ENABLED=0 go build -ldflags="-s -w" -o isthislegit ./cmd/isthislegit
 ./isthislegit jdsoft.com jdsoftcareers.com
