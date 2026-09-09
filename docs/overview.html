@@ -23,6 +23,8 @@ go test ./...</pre></td></tr></table>
 <tr><th>Flag</th><th>Description</th></tr>
 <tr><td><tt>-v, --verbose</tt></td><td>Append raw cert policy OIDs, TLS details, and RDAP JSON.</td></tr>
 <tr><td><tt>-j, --json</tt></td><td>Output the result summary as JSON for scripting.</td></tr>
+<tr><td><tt>-k, --insecure</tt></td><td>Skip TLS verification for RDAP (weakens results; last resort for devices without CA certificates).</td></tr>
+<tr><td><tt>--timeout=DUR</tt></td><td>Per-call deadline for DNS/TLS/RDAP; Go duration, default 5s.</td></tr>
 <tr><td><tt>--scale</tt></td><td>Print the scoring scale table and exit.</td></tr>
 <tr><td><tt>-h, --help</tt></td><td>Display usage and exit.</td></tr>
 </table>
@@ -30,8 +32,10 @@ go test ./...</pre></td></tr></table>
 <font color="#859900"><h2>Fetch Pipeline</h2></font>
 <p>Both domains are fetched concurrently with
 <tt>golang.org/x/sync/errgroup</tt> under a 15 second global deadline; each
-DNS, TLS, and RDAP call carries a 5 second deadline and is retried up to 3
-times. Total run time equals the slower of the two domains.</p>
+DNS, TLS, and RDAP call carries a 5 second deadline (adjustable with
+<tt>--timeout</tt>) and is retried up to 3 times. Total run time equals the
+slower of the two domains. Fail-closed errors name the underlying
+cause(s).</p>
 <table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>parse args --&gt; DNS pre-flight (target + suspect, parallel)
            --&gt; fetch target   = RDAP + TLS in parallel
            --&gt; fetch suspect  = RDAP + TLS in parallel
@@ -39,6 +43,14 @@ times. Total run time equals the slower of the two domains.</p>
 <p>Exit codes: <tt>0</tt> on success (including <tt>--scale</tt> and
 <tt>--help</tt>), <tt>1</tt> on bad flags, invalid domains, DNS failure, or
 failed data-quality verification.</p>
+
+<font color="#859900"><h2>Embedded Systems</h2></font>
+<p>The tool runs on embedded ARM devices (verified on a Miyoo Mini Plus),
+but minimal firmware often ships without a CA certificate store. DNS and
+certificate inspection still work there, while verified HTTPS (RDAP) fails;
+the fail-closed error names the cause (<tt>x509: certificate signed by
+unknown authority</tt>). Install <tt>ca-certificates</tt> and fix the clock
+where possible, otherwise use <tt>-k/--insecure</tt> as a last resort.</p>
 
 <font color="#859900"><h2>Scoring Scale</h2></font>
 <table border="1" cellpadding="4">

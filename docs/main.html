@@ -12,17 +12,20 @@ symbols; this page documents behavior.</p>
 <font color="#859900"><h2>Arguments</h2></font>
 <p>Syntax: <tt>isthislegit [FLAGS] &lt;legit_domain&gt;
 &lt;suspect_domain&gt;</tt>. Flags <tt>-v/--verbose</tt>,
-<tt>-j/--json</tt>, <tt>--scale</tt>, <tt>-h/--help</tt>, plus a
+<tt>-j/--json</tt>, <tt>-k/--insecure</tt> (skips RDAP TLS verification with
+a warning), <tt>--timeout=DUR</tt> (Go duration, default 5s),
+<tt>--scale</tt>, <tt>-h/--help</tt>, plus a
 <tt>--</tt> separator. Unknown flags and anything other than exactly two
 positional domains exit 1 with a usage message. Domains are normalized with
 <a href="dns.html#NormalizeDomain">dns.NormalizeDomain</a> and validated
-with <a href="dns.html#ValidSyntax">dns.ValidSyntax</a>.</p>
+with <a href="dns.html#ValidSyntax">dns.ValidSyntax</a>. Fail-closed errors
+include the underlying fetch cause(s).</p>
 
 <font color="#859900"><h2>Budgets</h2></font>
 <table border="1" cellpadding="4">
 <tr><th>Budget</th><th>Value</th></tr>
 <tr><td>Global deadline (both domains)</td><td>15 seconds</td></tr>
-<tr><td>Per-call deadline (DNS, TLS, RDAP)</td><td>5 seconds</td></tr>
+<tr><td>Per-call deadline (DNS, TLS, RDAP)</td><td>5 seconds, adjustable with --timeout</td></tr>
 <tr><td>Attempts per call</td><td>3, with 1 second between retries</td></tr>
 </table>
 

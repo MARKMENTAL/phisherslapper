@@ -39,12 +39,51 @@ Run the test suite with:
 go test ./...
 ```
 
+### Cross-compiling with compile.go
+
+`compile.go` (repo root) is the supported build driver. It cross-compiles
+`./cmd/isthislegit` for a platform/arch matrix, always with
+`CGO_ENABLED=0`, so every target builds without a cross C toolchain:
+
+```bash
+go run ./compile.go --platform=linux --arch=amd64
+```
+
+| Flag         | Default | Description                                              |
+|--------------|---------|----------------------------------------------------------|
+| `--platform` | `linux` | Target OS (see vocabulary below).                        |
+| `--arch`     | `amd64` | Target arch (see vocabulary below).                      |
+| `--static`   | `true`  | `true` for static (`CGO_ENABLED=0`), `false` for dynamic (`CGO_ENABLED=1`, host builds only unless `CC` points at a cross compiler). Both modes are stripped via `-ldflags="-s -w"`. |
+
+Platform vocabulary (case-insensitive): `linux`; `mac`/`macos`/`osx`/`darwin`
+→ `darwin`; `windows`/`win` → `windows`; `bsd` → all three of `freebsd`,
+`openbsd`, `netbsd` in one run (or name a single BSD explicitly).
+
+Arch vocabulary: raw `GOARCH` names plus aliases — `x64`/`x86-64` → `amd64`;
+`x86`/`i386`/`32bit` → `386`; `aarch64` → `arm64`; `arm`/`armv7`/`armv6`/`armv5`
+→ `arm` with matching `GOARM`. Unknown values exit 1, and combos the
+toolchain does not support (e.g. `darwin/386`) are refused with a clear
+error.
+
+Output binaries are named `isthislegit-<goos>-<goarch>` (with a `vGOARM`
+suffix when applicable, e.g. `isthislegit-linux-armv7`, and `.exe` on
+Windows):
+
+```bash
+go run ./compile.go --platform=linux --arch=amd64
+go run ./compile.go --platform=windows --arch=x64 --static=false
+go run ./compile.go --platform=bsd --arch=x64
+go run ./compile.go --platform=linux --arch=armv7   # embedded ARM (Miyoo Mini Plus)
+```
+
 ## Flags
 
 | Flag            | Description                                                   |
 |-----------------|---------------------------------------------------------------|
 | `-v, --verbose` | Append raw cert policy OIDs, TLS details, and RDAP JSON.      |
-| `-j, --json`    | Output the result summary as JSON for pipeline scripting.     |
+| `-j, --json`    | Output the result summary as JSON for scripting.              |
+| `-k, --insecure`| Skip TLS verification for RDAP                                |
+| `--timeout=DUR` | Per-call deadline for DNS/TLS/RDAP (Go duration, default 5s). |
 | `--scale`       | Print the scoring scale reference table and exit.             |
 | `-h, --help`    | Display usage and exit.                                       |
 
@@ -53,8 +92,26 @@ Examples:
 ```bash
 isthislegit jdsoft.com jdsoftcareers.com
 isthislegit -j example.com suspect-example.com
+isthislegit --timeout=10s example.com suspect-example.com
 isthislegit --scale
 ```
+
+### Embedded systems (no CA certificates)
+
+`isthislegit` runs on embedded ARM devices (verified on a Miyoo Mini Plus),
+but minimal firmware images often ship without a CA certificate store. In
+that case DNS resolution and certificate inspection still work, while
+verified HTTPS (RDAP) fails — the fail-closed error will say so directly
+(`x509: certificate signed by unknown authority`). Prefer installing
+`ca-certificates` and fixing the system clock where possible; otherwise use
+insecure mode:
+
+```bash
+isthislegit -k jdsoft.com jdsoftcareers.com
+```
+
+`--insecure` prints a warning and weakens results, so treat it as a last
+resort for devices without stored CA certificates.
 
 ## Example output
 
@@ -104,8 +161,12 @@ VERDICT: LIKELY UNRELATED / MISCONFIGURED
 
 Lookups fail closed: if RDAP dates or TLS data cannot be retrieved for
 either domain, the tool errors out instead of printing a verdict built on
-missing data. Fetches run concurrently under a 15s global budget with 5s
-per-call deadlines (3 attempts each).
+missing data, and the message names the underlying cause(s) (e.g. a TLS
+verification failure, which on minimal devices usually means missing CA
+certificates or a wrong system clock). Fetches run concurrently under a
+15s global budget with 5s per-call deadlines (3 attempts each, adjustable
+via `--timeout`); `--insecure` skips RDAP TLS verification as a last
+resort, with a warning.
 
 ## Project layout
 

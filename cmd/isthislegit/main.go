@@ -6,9 +6,11 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -22,7 +24,7 @@ import (
 
 const version = "1.01"
 
-const perCall = 5 * time.Second
+const defaultPerCall = 5 * time.Second
 const globalTimeout = 15 * time.Second
 
 func usage() string {
@@ -35,22 +37,28 @@ Usage:
 Options:
   -v, --verbose   Output raw JSON responses from RDAP and full TLS cert details.
   -j, --json      Output summary results in raw JSON format for scripting.
+  -k, --insecure  Skip TLS verification for RDAP (weakens results; use only
+                  on devices without CA certificates). Prints a warning.
+  --timeout=DUR   Per-call deadline for DNS/TLS/RDAP (Go duration, default 5s).
   --scale         Show the scoring scale table and exit (no domains required).
   -h, --help      Display this usage banner and exit.
 
 Examples:
   isthislegit jdsoft.com jdsoftcareers.com
   isthislegit -j example.com suspect-example.com
+  isthislegit --timeout=10s example.com suspect-example.com
 `, version)
 }
 
 type domainResult struct {
-	info score.DomainData
-	cert *cert.Details
-	rdap *rdap.Result
+	info    score.DomainData
+	cert    *cert.Details
+	rdap    *rdap.Result
+	rdapErr error
+	certErr error
 }
 
-func fetchDomain(ctx context.Context, client *http.Client, domain string, now time.Time) domainResult {
+func fetchDomain(ctx context.Context, client *http.Client, domain string, now time.Time, perCall time.Duration) domainResult {
 	res := domainResult{info: score.DomainData{Domain: domain}}
 	var g errgroup.Group
 
@@ -59,21 +67,17 @@ func fetchDomain(ctx context.Context, client *http.Client, domain string, now ti
 
 	g.Go(func() error {
 		r, err := rdap.Query(ctx, client, domain, perCall)
-		if err != nil {
-			return err
-		}
-		rd = r
-		return nil
+		rd, res.rdapErr = r, err
+		return err
 	})
 	g.Go(func() error {
 		c, err := cert.InspectDomain(ctx, domain, perCall)
-		if err != nil {
-			return err
-		}
-		cd = c
-		return nil
+		cd, res.certErr = c, err
+		return err
 	})
-	_ = g.Wait() // Fail-open per field; fail-closed verdict comes later.
+	// Fail-open per field; the root causes are kept for the
+	// fail-closed verdict gate below.
+	_ = g.Wait()
 
 	res.rdap = rd
 	res.cert = cd
@@ -109,7 +113,8 @@ func fetchDomain(ctx context.Context, client *http.Client, domain string, now ti
 }
 
 func run() int {
-	var verbose, jsonOut bool
+	var verbose, jsonOut, insecure bool
+	var perCall = defaultPerCall
 	var positionals []string
 	args := os.Args[1:]
 	seenDashDash := false
@@ -119,11 +124,34 @@ func run() int {
 			positionals = append(positionals, a)
 			continue
 		}
+		if strings.HasPrefix(a, "--timeout=") {
+			d, err := time.ParseDuration(strings.TrimPrefix(a, "--timeout="))
+			if err != nil || d <= 0 {
+				fmt.Fprintf(os.Stderr, "[!] Error: Invalid --timeout value '%s'. Use a Go duration like 5s or 10s.\n", a)
+				return 1
+			}
+			perCall = d
+			continue
+		}
 		switch a {
 		case "-v", "--verbose":
 			verbose = true
 		case "-j", "--json":
 			jsonOut = true
+		case "-k", "--insecure":
+			insecure = true
+		case "--timeout":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "[!] Error: --timeout requires a value (e.g. --timeout=10s).")
+				return 1
+			}
+			i++
+			d, err := time.ParseDuration(args[i])
+			if err != nil || d <= 0 {
+				fmt.Fprintf(os.Stderr, "[!] Error: Invalid --timeout value '%s'. Use a Go duration like 5s or 10s.\n", args[i])
+				return 1
+			}
+			perCall = d
 		case "--scale":
 			fmt.Print(report.Scale(version))
 			return 0
@@ -164,7 +192,7 @@ func run() int {
 	for _, d := range []string{legit, suspect} {
 		d := d
 		dg.Go(func() error {
-			if err := dns.CheckDNS(ctx, d); err != nil {
+			if err := dns.CheckDNS(ctx, d, perCall); err != nil {
 				return fmt.Errorf("domain '%s' failed DNS resolution (NXDOMAIN or offline). Aborting", d)
 			}
 			return nil
@@ -176,22 +204,43 @@ func run() int {
 	}
 
 	client := &http.Client{}
+	if insecure {
+		fmt.Fprintln(os.Stderr, "[!] Warning: TLS verification disabled for RDAP (--insecure). Results are weaker.")
+		client.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+	}
 	now := time.Now()
 
 	var target, sus domainResult
 	var fg errgroup.Group
 	fg.Go(func() error {
-		target = fetchDomain(ctx, client, legit, now)
+		target = fetchDomain(ctx, client, legit, now, perCall)
 		return nil
 	})
 	fg.Go(func() error {
-		sus = fetchDomain(ctx, client, suspect, now)
+		sus = fetchDomain(ctx, client, suspect, now, perCall)
 		return nil
 	})
 	_ = fg.Wait()
 
 	if err := score.VerifyDataQuality(target.info, sus.info); err != nil {
-		fmt.Fprintf(os.Stderr, "[!] Error: %v.\n", err)
+		msg := fmt.Sprintf("[!] Error: %v.", err)
+		var causes []string
+		if target.rdapErr != nil {
+			causes = append(causes, fmt.Sprintf("target RDAP: %v", target.rdapErr))
+		}
+		if target.certErr != nil {
+			causes = append(causes, fmt.Sprintf("target TLS: %v", target.certErr))
+		}
+		if sus.rdapErr != nil {
+			causes = append(causes, fmt.Sprintf("suspect RDAP: %v", sus.rdapErr))
+		}
+		if sus.certErr != nil {
+			causes = append(causes, fmt.Sprintf("suspect TLS: %v", sus.certErr))
+		}
+		if len(causes) > 0 {
+			msg += fmt.Sprintf(" Cause(s): %s.", strings.Join(causes, "; "))
+		}
+		fmt.Fprintln(os.Stderr, msg)
 		return 1
 	}
 	result := score.Score(target.info, sus.info)

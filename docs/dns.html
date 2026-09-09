@@ -30,14 +30,15 @@ dns.ValidSyntax("no-dot")      // =&gt; false</pre></td></tr></table>
 <hr>
 <a name="CheckDNS"></a>
 <font color="#859900"><h2>CheckDNS</h2></font>
-<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func CheckDNS(ctx context.Context, domain string) error</pre></td></tr></table>
+<table border="0" cellpadding="8" width="100%"><tr><td bgcolor="#073642"><pre>func CheckDNS(ctx context.Context, domain string, timeout time.Duration) error</pre></td></tr></table>
 <p>Aborts early on NXDOMAIN or unresolvable names via
-<tt>net.DefaultResolver.LookupIP</tt> with a 5 second deadline. Returns
+<tt>net.DefaultResolver.LookupIP</tt> with the given deadline. Returns
 <tt>nil</tt> when at least one IPv4 address resolves, an error otherwise.</p>
 <table border="1" cellpadding="4">
 <tr><th>Parameter</th><th>Description</th></tr>
 <tr><td><tt>ctx</tt></td><td>Parent context; the global 15 second budget.</td></tr>
 <tr><td><tt>domain</tt></td><td>Already-normalized domain to resolve.</td></tr>
+<tr><td><tt>timeout</tt></td><td>Per-call deadline (the CLI --timeout value).</td></tr>
 </table>
 </body>
 </html>

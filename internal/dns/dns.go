@@ -38,8 +38,8 @@ func ValidSyntax(d string) bool {
 
 // CheckDNS aborts early on NXDOMAIN / unresolvable names.
 // Mirrors bash check_dns (dig +short A). Uses the stdlib resolver.
-func CheckDNS(ctx context.Context, domain string) error {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+func CheckDNS(ctx context.Context, domain string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	addrs, err := net.DefaultResolver.LookupIP(ctx, "ip4", domain)
 	if err != nil {
